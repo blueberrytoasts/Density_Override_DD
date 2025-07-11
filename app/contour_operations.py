@@ -3,6 +3,7 @@ import nibabel as nib
 from scipy.ndimage import binary_erosion, binary_dilation, binary_fill_holes
 from artifact_discrimination import create_sequential_masks
 from artifact_discrimination_fast import create_fast_russian_doll_segmentation
+from artifact_discrimination_enhanced import create_enhanced_russian_doll_segmentation
 
 
 def boolean_subtract(mask1, mask2):
@@ -187,7 +188,8 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
                                    dark_threshold_high=-150,
                                    bone_threshold_low=300, bone_threshold_high=1500,
                                    bright_artifact_max_distance_cm=10.0,
-                                   use_fast_mode=True):
+                                   use_fast_mode=True,
+                                   use_enhanced_mode=False):
     """
     Create segmentation using Russian doll approach with smart bone/artifact discrimination.
     
@@ -201,12 +203,22 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         bone_threshold_high: Upper threshold for bone/bright artifacts
         bright_artifact_max_distance_cm: Max distance from metal for artifacts
         use_fast_mode: Use fast discrimination (distance-based) instead of profile analysis
+        use_enhanced_mode: Use enhanced edge-based discrimination
         
     Returns:
         dict: All segmentation masks including discrimination results
     """
-    # Use fast or detailed discrimination method
-    if use_fast_mode:
+    # Choose discrimination method
+    if use_enhanced_mode:
+        segmentation_result = create_enhanced_russian_doll_segmentation(
+            ct_volume,
+            metal_mask,
+            spacing,
+            dark_range=(-1024, dark_threshold_high),
+            bone_range=(bone_threshold_low, bone_threshold_high),
+            max_distance_cm=bright_artifact_max_distance_cm
+        )
+    elif use_fast_mode:
         segmentation_result = create_fast_russian_doll_segmentation(
             ct_volume,
             metal_mask,

@@ -189,12 +189,14 @@ with st.sidebar:
         
         segmentation_method = st.radio(
             "Segmentation Approach",
-            ["Russian Doll with Smart Discrimination (Recommended)", "Legacy Threshold-Based"],
-            help="Russian Doll: Uses star profile analysis to discriminate bone from artifacts. Legacy: Simple threshold-based segmentation."
+            ["Russian Doll with Smart Discrimination (Recommended)", 
+             "Russian Doll with Enhanced Edge Analysis", 
+             "Legacy Threshold-Based"],
+            help="Russian Doll: Fast distance-based discrimination. Enhanced: Edge coherence and structural analysis. Legacy: Simple threshold-based."
         )
         
         if segmentation_method == "Russian Doll with Smart Discrimination (Recommended)":
-            st.info("🧠 Uses star profile analysis to intelligently distinguish bone from bright artifacts")
+            st.info("🧠 Uses distance-based analysis for fast bone/artifact discrimination")
             
             col1, col2 = st.columns(2)
             with col1:
@@ -214,6 +216,38 @@ with st.sidebar:
             # Not used in Russian doll method but keep for compatibility
             bright_low = bone_low
             bright_high = 3000
+            
+        elif segmentation_method == "Russian Doll with Enhanced Edge Analysis":
+            st.info("🔬 Advanced edge coherence analysis for superior bone/artifact discrimination")
+            st.warning("⚠️ This method is slower but provides better accuracy for challenging cases")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                dark_high = st.number_input("Dark Artifact Max HU", value=-150, key="enh_dark")
+                bone_low = st.number_input("Bone/Bright Min HU", value=300, key="enh_bone_low")
+            with col2:
+                bone_high = st.number_input("Bone/Bright Max HU", value=1500, key="enh_bone_high")
+                artifact_distance_cm = st.slider(
+                    "Max Analysis Distance (cm)",
+                    min_value=2.0,
+                    max_value=15.0,
+                    value=10.0,
+                    step=1.0,
+                    help="Maximum distance from metal to analyze",
+                    key="enh_dist"
+                )
+            
+            st.markdown("**Enhanced Features:**")
+            st.markdown("- Edge coherence analysis (bone has continuous edges)")
+            st.markdown("- Gradient jump detection (bone has sharp transitions)")
+            st.markdown("- Radial vs tangential feature analysis")
+            st.markdown("- 3D structural continuity tracking")
+            st.markdown("- Multi-scale edge persistence")
+            
+            # Not used in Russian doll method but keep for compatibility
+            bright_low = bone_low
+            bright_high = 3000
+            
         else:
             # Legacy parameters
             col1, col2 = st.columns(2)
@@ -428,26 +462,47 @@ if st.session_state.ct_volume is not None:
                                         dark_threshold_high=dark_high,
                                         bone_threshold_low=bone_low,
                                         bone_threshold_high=bone_high,
-                                        bright_artifact_max_distance_cm=artifact_distance_cm
+                                        bright_artifact_max_distance_cm=artifact_distance_cm,
+                                        use_fast_mode=True,
+                                        use_enhanced_mode=False
                                     )
                                     
-                                    # Update masks
-                                    st.session_state.masks['dark_artifacts'] = segmentation_result.get('dark_artifacts')
-                                    st.session_state.masks['bone'] = segmentation_result.get('bone')
-                                    st.session_state.masks['bright_artifacts'] = segmentation_result.get('bright_artifacts')
+                            elif segmentation_method == "Russian Doll with Enhanced Edge Analysis":
+                                # Use enhanced edge-based discrimination
+                                with st.spinner("Running enhanced edge-based discrimination (this may take a few minutes)..."):
+                                    segmentation_result = create_russian_doll_segmentation(
+                                        st.session_state.ct_volume,
+                                        metal_mask,
+                                        st.session_state.ct_metadata['spacing'],
+                                        roi_bounds,
+                                        dark_threshold_high=dark_high,
+                                        bone_threshold_low=bone_low,
+                                        bone_threshold_high=bone_high,
+                                        bright_artifact_max_distance_cm=artifact_distance_cm,
+                                        use_fast_mode=False,
+                                        use_enhanced_mode=True
+                                    )
                                     
-                                    # Store additional results for analysis
-                                    if 'segmentation_info' not in st.session_state:
-                                        st.session_state.segmentation_info = {}
-                                    st.session_state.segmentation_info['confidence_map'] = segmentation_result.get('confidence_map')
-                                    st.session_state.segmentation_info['distance_map'] = segmentation_result.get('distance_map')
-                                    
+                                # Update masks for both Russian doll methods
+                                st.session_state.masks['dark_artifacts'] = segmentation_result.get('dark_artifacts')
+                                st.session_state.masks['bone'] = segmentation_result.get('bone')
+                                st.session_state.masks['bright_artifacts'] = segmentation_result.get('bright_artifacts')
+                                
+                                # Store additional results for analysis
+                                if 'segmentation_info' not in st.session_state:
+                                    st.session_state.segmentation_info = {}
+                                st.session_state.segmentation_info['confidence_map'] = segmentation_result.get('confidence_map')
+                                st.session_state.segmentation_info['distance_map'] = segmentation_result.get('distance_map')
+                                
+                                if segmentation_method == "Russian Doll with Enhanced Edge Analysis":
+                                    st.success("Enhanced edge-based segmentation complete!")
+                                else:
                                     st.success("Smart artifact segmentation complete!")
-                                    
-                                    # Show statistics
-                                    bone_voxels = np.sum(st.session_state.masks['bone']) if 'bone' in st.session_state.masks else 0
-                                    bright_voxels = np.sum(st.session_state.masks['bright_artifacts']) if 'bright_artifacts' in st.session_state.masks else 0
-                                    st.info(f"Discriminated {bone_voxels:,} bone voxels from {bright_voxels:,} bright artifact voxels")
+                                
+                                # Show statistics
+                                bone_voxels = np.sum(st.session_state.masks['bone']) if 'bone' in st.session_state.masks else 0
+                                bright_voxels = np.sum(st.session_state.masks['bright_artifacts']) if 'bright_artifacts' in st.session_state.masks else 0
+                                st.info(f"Discriminated {bone_voxels:,} bone voxels from {bright_voxels:,} bright artifact voxels")
                             else:
                                 # Legacy method
                                 bright_mask = create_bright_artifact_mask(
