@@ -2,7 +2,7 @@ import numpy as np
 from scipy.ndimage import label, binary_dilation, gaussian_filter
 from scipy.signal import convolve2d
 from skimage.measure import regionprops
-import cv2
+from skimage.feature import canny
 
 
 def analyze_contour_characteristics(mask_slice, ct_slice):
@@ -25,10 +25,12 @@ def analyze_contour_characteristics(mask_slice, ct_slice):
         intensity_cv = intensity_std / (intensity_mean + 1e-6)  # Coefficient of variation
         
         # 2. Edge characteristics - bone has sharp edges, artifacts are diffuse
-        edge_mask = np.zeros_like(mask_slice)
-        edge_mask[coords[:, 0], coords[:, 1]] = 1
-        edges = cv2.Canny(edge_mask.astype(np.uint8) * 255, 50, 150)
-        edge_ratio = np.sum(edges > 0) / region.area
+        edge_mask = np.zeros_like(mask_slice, dtype=bool)
+        edge_mask[coords[:, 0], coords[:, 1]] = True
+        # Use skimage's canny instead of cv2.Canny
+        # Note: skimage.canny expects values between 0 and 1 for binary images
+        edges = canny(edge_mask.astype(float), low_threshold=0.1, high_threshold=0.3)
+        edge_ratio = np.sum(edges) / region.area
         
         # 3. Shape regularity - bone is more regular
         solidity = region.solidity
