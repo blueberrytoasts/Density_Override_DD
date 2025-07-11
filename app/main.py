@@ -469,19 +469,30 @@ if st.session_state.ct_volume is not None:
                                     
                             elif segmentation_method == "Russian Doll with Enhanced Edge Analysis":
                                 # Use enhanced edge-based discrimination
-                                with st.spinner("Running enhanced edge-based discrimination (this may take a few minutes)..."):
-                                    segmentation_result = create_russian_doll_segmentation(
-                                        st.session_state.ct_volume,
-                                        metal_mask,
-                                        st.session_state.ct_metadata['spacing'],
-                                        roi_bounds,
-                                        dark_threshold_high=dark_high,
-                                        bone_threshold_low=bone_low,
-                                        bone_threshold_high=bone_high,
-                                        bright_artifact_max_distance_cm=artifact_distance_cm,
-                                        use_fast_mode=False,
-                                        use_enhanced_mode=True
-                                    )
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+                                
+                                def update_progress(progress, message):
+                                    progress_bar.progress(progress)
+                                    status_text.text(message)
+                                
+                                segmentation_result = create_russian_doll_segmentation(
+                                    st.session_state.ct_volume,
+                                    metal_mask,
+                                    st.session_state.ct_metadata['spacing'],
+                                    roi_bounds,
+                                    dark_threshold_high=dark_high,
+                                    bone_threshold_low=bone_low,
+                                    bone_threshold_high=bone_high,
+                                    bright_artifact_max_distance_cm=artifact_distance_cm,
+                                    use_fast_mode=False,
+                                    use_enhanced_mode=True,
+                                    progress_callback=update_progress
+                                )
+                                
+                                # Clear progress indicators
+                                progress_bar.empty()
+                                status_text.empty()
                                     
                                 # Update masks for both Russian doll methods
                                 st.session_state.masks['dark_artifacts'] = segmentation_result.get('dark_artifacts')

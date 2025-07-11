@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter, sobel, generic_gradient_magnitude
-from scipy.ndimage import label, binary_dilation, binary_erosion
+from scipy.ndimage import label, binary_dilation, binary_erosion, distance_transform_edt
 from skimage.feature import canny
 from skimage.measure import regionprops
 import time
@@ -250,7 +250,8 @@ def multi_scale_edge_detection(ct_slice, mask):
 
 def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
                                         bone_range=(300, 1500),
-                                        max_distance_cm=10.0):
+                                        max_distance_cm=10.0,
+                                        progress_callback=None):
     """
     Enhanced discrimination using edge coherence and structural analysis.
     
@@ -260,6 +261,7 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
         spacing: Voxel spacing (z, y, x) in mm
         bone_range: HU range for bone/bright artifacts
         max_distance_cm: Maximum distance from metal
+        progress_callback: Optional callback function(progress, message) for progress updates
         
     Returns:
         dict: Enhanced discrimination results
@@ -268,8 +270,13 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
     print("Starting enhanced bone/artifact discrimination...")
     
     # Get distance map from metal
-    from artifact_discrimination_fast import create_distance_from_metal_mask
-    distance_map = create_distance_from_metal_mask(metal_mask, max_distance_cm, spacing)
+    if progress_callback:
+        progress_callback(0.05, "Computing distance map from metal...")
+    
+    # Create distance map (inline to match artifact_discrimination_fast.py)
+    inverted = np.logical_not(metal_mask)
+    distances = distance_transform_edt(inverted, sampling=spacing)
+    distance_map = distances / 10.0  # Convert to cm
     
     # Identify candidate voxels
     candidates_mask = (ct_volume >= bone_range[0]) & (ct_volume <= bone_range[1]) & \
@@ -283,6 +290,9 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
     confidence_map = np.zeros_like(ct_volume, dtype=float)
     
     # Find metal centers for radial analysis
+    if progress_callback:
+        progress_callback(0.1, "Finding metal centers...")
+    
     metal_centers = {}
     for z in range(metal_mask.shape[0]):
         if np.any(metal_mask[z]):
@@ -290,11 +300,17 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
             metal_centers[z] = (np.mean(y_coords), np.mean(x_coords))
     
     # Process each slice
-    for z in range(ct_volume.shape[0]):
+    total_slices = ct_volume.shape[0]
+    slices_with_candidates = sum(1 for z in range(total_slices) if np.any(candidates_mask[z]))
+    processed_slices = 0
+    
+    for z in range(total_slices):
         slice_candidates = candidates_mask[z]
         
         if not np.any(slice_candidates):
             continue
+        
+        processed_slices += 1
             
         ct_slice = ct_volume[z]
         
@@ -306,7 +322,15 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
             nearest_z = min(metal_centers.keys(), key=lambda k: abs(k - z))
             metal_center = metal_centers[nearest_z]
         
-        print(f"Processing slice {z+1}/{ct_volume.shape[0]}")
+        # Update progress
+        base_progress = 0.15
+        slice_progress = 0.75  # 75% of progress for slice processing
+        current_progress = base_progress + (z / total_slices) * slice_progress
+        
+        if progress_callback:
+            progress_callback(current_progress, f"Processing slice {z+1}/{total_slices}...")
+        else:
+            print(f"Processing slice {z+1}/{total_slices}")
         
         # 1. Edge coherence analysis
         coherence_map, grad_mag, grad_dir = compute_edge_coherence(
@@ -399,7 +423,10 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
                         confidence_map[z][component_mask] = 0.5
     
     # Post-processing
-    print("Applying post-processing...")
+    if progress_callback:
+        progress_callback(0.9, "Applying post-processing...")
+    else:
+        print("Applying post-processing...")
     
     # Clean up small isolated regions
     bone_mask = binary_erosion(bone_mask, iterations=1)
@@ -407,8 +434,12 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
     bone_mask = binary_erosion(bone_mask, iterations=1)
     
     elapsed_time = time.time() - start_time
-    print(f"Enhanced discrimination completed in {elapsed_time:.1f} seconds")
-    print(f"Found {np.sum(bone_mask):,} bone voxels and {np.sum(artifact_mask):,} artifact voxels")
+    
+    if progress_callback:
+        progress_callback(1.0, f"Completed in {elapsed_time:.1f}s - Found {np.sum(bone_mask):,} bone, {np.sum(artifact_mask):,} artifact voxels")
+    else:
+        print(f"Enhanced discrimination completed in {elapsed_time:.1f} seconds")
+        print(f"Found {np.sum(bone_mask):,} bone voxels and {np.sum(artifact_mask):,} artifact voxels")
     
     return {
         'bone_mask': bone_mask,
@@ -421,7 +452,8 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
 def create_enhanced_russian_doll_segmentation(ct_volume, metal_mask, spacing,
                                             dark_range=(-1024, -150),
                                             bone_range=(300, 1500),
-                                            max_distance_cm=10.0):
+                                            max_distance_cm=10.0,
+                                            progress_callback=None):
     """
     Russian doll segmentation with enhanced bone/artifact discrimination.
     
@@ -432,6 +464,7 @@ def create_enhanced_russian_doll_segmentation(ct_volume, metal_mask, spacing,
         dark_range: HU range for dark artifacts
         bone_range: HU range for bone/bright artifacts
         max_distance_cm: Max distance from metal
+        progress_callback: Optional callback function(progress, message) for progress updates
         
     Returns:
         dict: All segmentation masks
@@ -439,15 +472,24 @@ def create_enhanced_russian_doll_segmentation(ct_volume, metal_mask, spacing,
     print("Starting enhanced Russian doll segmentation...")
     
     # Step 1: Dark artifacts (simple threshold)
-    print("\nStep 1: Segmenting dark artifacts...")
+    if progress_callback:
+        progress_callback(0, "Step 1: Segmenting dark artifacts...")
+    else:
+        print("\nStep 1: Segmenting dark artifacts...")
+    
     dark_mask = (ct_volume >= dark_range[0]) & (ct_volume <= dark_range[1]) & (~metal_mask)
     
     # Step 2: Enhanced bone/bright discrimination
-    print("\nStep 2: Enhanced bone/bright artifact discrimination...")
+    if progress_callback:
+        progress_callback(0.02, "Step 2: Enhanced bone/bright artifact discrimination...")
+    else:
+        print("\nStep 2: Enhanced bone/bright artifact discrimination...")
+    
     discrimination_result = enhanced_bone_artifact_discrimination(
         ct_volume, metal_mask, spacing,
         bone_range=bone_range,
-        max_distance_cm=max_distance_cm
+        max_distance_cm=max_distance_cm,
+        progress_callback=progress_callback
     )
     
     bone_mask = discrimination_result['bone_mask']

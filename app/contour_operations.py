@@ -189,7 +189,8 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
                                    bone_threshold_low=300, bone_threshold_high=1500,
                                    bright_artifact_max_distance_cm=10.0,
                                    use_fast_mode=True,
-                                   use_enhanced_mode=False):
+                                   use_enhanced_mode=False,
+                                   progress_callback=None):
     """
     Create segmentation using Russian doll approach with smart bone/artifact discrimination.
     
@@ -204,6 +205,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         bright_artifact_max_distance_cm: Max distance from metal for artifacts
         use_fast_mode: Use fast discrimination (distance-based) instead of profile analysis
         use_enhanced_mode: Use enhanced edge-based discrimination
+        progress_callback: Optional callback function(progress, message) for progress updates
         
     Returns:
         dict: All segmentation masks including discrimination results
@@ -216,7 +218,8 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             spacing,
             dark_range=(-1024, dark_threshold_high),
             bone_range=(bone_threshold_low, bone_threshold_high),
-            max_distance_cm=bright_artifact_max_distance_cm
+            max_distance_cm=bright_artifact_max_distance_cm,
+            progress_callback=progress_callback
         )
     elif use_fast_mode:
         segmentation_result = create_fast_russian_doll_segmentation(
