@@ -197,6 +197,10 @@ def analyze_component_shape(binary_mask):
     labeled_mask, num_features = label(binary_mask)
     shape_features = {}
     
+    if num_features == 0:
+        print("WARNING: No connected components found in mask")
+        return labeled_mask, shape_features
+    
     for region in regionprops(labeled_mask):
         features = {
             'label': region.label,
@@ -299,6 +303,17 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
             y_coords, x_coords = np.where(metal_mask[z])
             metal_centers[z] = (np.mean(y_coords), np.mean(x_coords))
     
+    # Check if we found any metal centers
+    if not metal_centers:
+        print("WARNING: No metal centers found in the volume!")
+        # Return empty masks
+        return {
+            'bone_mask': bone_mask,
+            'artifact_mask': artifact_mask,
+            'confidence_map': confidence_map,
+            'distance_map': distance_map
+        }
+    
     # Process each slice
     total_slices = ct_volume.shape[0]
     slices_with_candidates = sum(1 for z in range(total_slices) if np.any(candidates_mask[z]))
@@ -315,12 +330,21 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
         ct_slice = ct_volume[z]
         
         # Get metal center for this slice
-        if z in metal_centers:
-            metal_center = metal_centers[z]
-        else:
-            # Find nearest slice with metal
-            nearest_z = min(metal_centers.keys(), key=lambda k: abs(k - z))
-            metal_center = metal_centers[nearest_z]
+        try:
+            if z in metal_centers:
+                metal_center = metal_centers[z]
+            else:
+                # Find nearest slice with metal
+                if metal_centers:  # Check if we have any centers
+                    nearest_z = min(metal_centers.keys(), key=lambda k: abs(k - z))
+                    metal_center = metal_centers[nearest_z]
+                else:
+                    # Use center of slice as fallback
+                    metal_center = (ct_slice.shape[0] // 2, ct_slice.shape[1] // 2)
+        except Exception as e:
+            print(f"WARNING: Error finding metal center for slice {z}: {e}")
+            # Use center of slice as fallback
+            metal_center = (ct_slice.shape[0] // 2, ct_slice.shape[1] // 2)
         
         # Update progress
         base_progress = 0.15
@@ -332,42 +356,72 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
         else:
             print(f"Processing slice {z+1}/{total_slices}")
         
-        # 1. Edge coherence analysis
-        coherence_map, grad_mag, grad_dir = compute_edge_coherence(
-            ct_slice, slice_candidates, window_size=7
-        )
+        # Initialize feature maps with defaults
+        coherence_map = np.zeros_like(ct_slice, dtype=float)
+        grad_mag = np.zeros_like(ct_slice, dtype=float)
+        sharp_edges = np.zeros_like(ct_slice, dtype=bool)
+        radial_alignment = np.zeros_like(ct_slice, dtype=float)
+        persistent_edges = np.zeros_like(ct_slice, dtype=bool)
+        continuity_score = np.zeros_like(ct_slice, dtype=float)
         
-        # 2. Gradient jump analysis
-        sharp_edges, _, hessian = analyze_gradient_jumps(ct_slice, slice_candidates)
+        try:
+            # 1. Edge coherence analysis
+            coherence_map, grad_mag, grad_dir = compute_edge_coherence(
+                ct_slice, slice_candidates, window_size=7
+            )
+        except Exception as e:
+            print(f"WARNING: Edge coherence failed for slice {z}: {e}")
         
-        # 3. Radial vs tangential features
-        radial_alignment, radial_dist = analyze_radial_features(
-            ct_slice, slice_candidates, metal_center
-        )
+        try:
+            # 2. Gradient jump analysis
+            sharp_edges, _, hessian = analyze_gradient_jumps(ct_slice, slice_candidates)
+        except Exception as e:
+            print(f"WARNING: Gradient jump analysis failed for slice {z}: {e}")
         
-        # 4. Multi-scale edge persistence
-        persistent_edges, very_persistent = multi_scale_edge_detection(
-            ct_slice, slice_candidates
-        )
+        try:
+            # 3. Radial vs tangential features
+            radial_alignment, radial_dist = analyze_radial_features(
+                ct_slice, slice_candidates, metal_center
+            )
+        except Exception as e:
+            print(f"WARNING: Radial feature analysis failed for slice {z}: {e}")
         
-        # 5. 3D continuity (only check every few slices for speed)
-        continuity_score = np.zeros_like(ct_slice)
-        if z % 3 == 0:  # Check every 3rd slice
-            continuity_score = analyze_3d_continuity(ct_volume, z, slice_candidates)
+        try:
+            # 4. Multi-scale edge persistence
+            persistent_edges, very_persistent = multi_scale_edge_detection(
+                ct_slice, slice_candidates
+            )
+        except Exception as e:
+            print(f"WARNING: Multi-scale edge detection failed for slice {z}: {e}")
+        
+        try:
+            # 5. 3D continuity (only check every few slices for speed)
+            if z % 3 == 0:  # Check every 3rd slice
+                continuity_score = analyze_3d_continuity(ct_volume, z, slice_candidates)
+        except Exception as e:
+            print(f"WARNING: 3D continuity analysis failed for slice {z}: {e}")
         
         # 6. Component shape analysis
-        labeled_mask, shape_features = analyze_component_shape(slice_candidates)
+        try:
+            labeled_mask, shape_features = analyze_component_shape(slice_candidates)
+        except Exception as e:
+            print(f"WARNING: Error analyzing component shapes for slice {z}: {e}")
+            continue
         
         # Combine features for discrimination
         for label_id, features in shape_features.items():
             component_mask = labeled_mask == label_id
             
-            # Calculate feature scores
-            coherence_score = np.mean(coherence_map[component_mask])
-            edge_persistence = np.sum(persistent_edges & component_mask) / features['area']
-            radial_score = np.mean(radial_alignment[component_mask])
-            continuity_mean = np.mean(continuity_score[component_mask])
-            has_sharp_edges = np.sum(sharp_edges & component_mask) / features['area']
+            # Calculate feature scores with error handling
+            try:
+                coherence_score = np.mean(coherence_map[component_mask]) if np.any(component_mask) else 0
+                edge_persistence = np.sum(persistent_edges & component_mask) / features['area'] if features['area'] > 0 else 0
+                radial_score = np.mean(radial_alignment[component_mask]) if np.any(component_mask) else 0.5
+                continuity_mean = np.mean(continuity_score[component_mask]) if np.any(component_mask) else 0
+                has_sharp_edges = np.sum(sharp_edges & component_mask) / features['area'] if features['area'] > 0 else 0
+            except Exception as e:
+                print(f"WARNING: Error calculating features for component {label_id} on slice {z}: {e}")
+                continue
             
             # Bone characteristics:
             # - High edge coherence (>0.7)
@@ -428,10 +482,27 @@ def enhanced_bone_artifact_discrimination(ct_volume, metal_mask, spacing,
     else:
         print("Applying post-processing...")
     
-    # Clean up small isolated regions
-    bone_mask = binary_erosion(bone_mask, iterations=1)
-    bone_mask = binary_dilation(bone_mask, iterations=2)
-    bone_mask = binary_erosion(bone_mask, iterations=1)
+    # Clean up small isolated regions - but be conservative
+    # Only apply if we have sufficient voxels to work with
+    bone_voxels_before = np.sum(bone_mask)
+    artifact_voxels_before = np.sum(artifact_mask)
+    
+    if bone_voxels_before > 1000:  # Only clean up if we have enough voxels
+        bone_mask = binary_erosion(bone_mask, iterations=1)
+        bone_mask = binary_dilation(bone_mask, iterations=2)
+        bone_mask = binary_erosion(bone_mask, iterations=1)
+    
+    print(f"Post-processing: Bone {bone_voxels_before:,} -> {np.sum(bone_mask):,}")
+    print(f"Post-processing: Artifacts {artifact_voxels_before:,} -> {np.sum(artifact_mask):,}")
+    
+    # Validation check - if we have no results, try a fallback
+    total_results = np.sum(bone_mask) + np.sum(artifact_mask)
+    if total_results == 0 and np.sum(candidates_mask) > 0:
+        print("WARNING: No voxels classified! Using distance-based fallback...")
+        # Simple distance-based fallback
+        bone_mask = candidates_mask & (distance_map < 2.0)
+        artifact_mask = candidates_mask & (distance_map >= 2.0) & (distance_map <= max_distance_cm)
+        print(f"Fallback: {np.sum(bone_mask):,} bone, {np.sum(artifact_mask):,} artifact voxels")
     
     elapsed_time = time.time() - start_time
     

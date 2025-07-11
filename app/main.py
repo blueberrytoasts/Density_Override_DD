@@ -476,28 +476,44 @@ if st.session_state.ct_volume is not None:
                                     progress_bar.progress(progress)
                                     status_text.text(message)
                                 
-                                segmentation_result = create_russian_doll_segmentation(
-                                    st.session_state.ct_volume,
-                                    metal_mask,
-                                    st.session_state.ct_metadata['spacing'],
-                                    roi_bounds,
-                                    dark_threshold_high=dark_high,
-                                    bone_threshold_low=bone_low,
-                                    bone_threshold_high=bone_high,
-                                    bright_artifact_max_distance_cm=artifact_distance_cm,
-                                    use_fast_mode=False,
-                                    use_enhanced_mode=True,
-                                    progress_callback=update_progress
-                                )
+                                try:
+                                    segmentation_result = create_russian_doll_segmentation(
+                                        st.session_state.ct_volume,
+                                        metal_mask,
+                                        st.session_state.ct_metadata['spacing'],
+                                        roi_bounds,
+                                        dark_threshold_high=dark_high,
+                                        bone_threshold_low=bone_low,
+                                        bone_threshold_high=bone_high,
+                                        bright_artifact_max_distance_cm=artifact_distance_cm,
+                                        use_fast_mode=False,
+                                        use_enhanced_mode=True,
+                                        progress_callback=update_progress
+                                    )
+                                except Exception as e:
+                                    progress_bar.empty()
+                                    status_text.empty()
+                                    st.error(f"Enhanced segmentation failed: {str(e)}")
+                                    st.exception(e)
+                                    segmentation_result = None
                                 
                                 # Clear progress indicators
                                 progress_bar.empty()
                                 status_text.empty()
+                                
+                                if segmentation_result:
+                                    # Update masks for both Russian doll methods
+                                    st.session_state.masks['dark_artifacts'] = segmentation_result.get('dark_artifacts')
+                                    st.session_state.masks['bone'] = segmentation_result.get('bone')
+                                    st.session_state.masks['bright_artifacts'] = segmentation_result.get('bright_artifacts')
                                     
-                                # Update masks for both Russian doll methods
-                                st.session_state.masks['dark_artifacts'] = segmentation_result.get('dark_artifacts')
-                                st.session_state.masks['bone'] = segmentation_result.get('bone')
-                                st.session_state.masks['bright_artifacts'] = segmentation_result.get('bright_artifacts')
+                                    # Log what we got
+                                    dark_count = np.sum(segmentation_result.get('dark_artifacts', np.zeros(1))) 
+                                    bone_count = np.sum(segmentation_result.get('bone', np.zeros(1)))
+                                    bright_count = np.sum(segmentation_result.get('bright_artifacts', np.zeros(1)))
+                                    st.write(f"Debug: Dark={dark_count:,}, Bone={bone_count:,}, Bright={bright_count:,}")
+                                else:
+                                    st.warning("Segmentation returned no results")
                                 
                                 # Store additional results for analysis
                                 if 'segmentation_info' not in st.session_state:

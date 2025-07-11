@@ -252,14 +252,23 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
                 segmentation_result[mask_name] = segmentation_result[mask_name] & roi_mask
     
     # Apply refinement to all masks
+    print("\nApplying refinement to masks...")
     for mask_name in ['dark_artifacts', 'bone', 'bright_artifacts']:
         if mask_name in segmentation_result:
+            original_count = np.sum(segmentation_result[mask_name])
             segmentation_result[mask_name] = refine_mask(
                 segmentation_result[mask_name], 
                 min_size=10,
                 fill_holes=True,
                 smooth_iterations=1
             )
+            refined_count = np.sum(segmentation_result[mask_name])
+            print(f"  {mask_name}: {original_count:,} -> {refined_count:,} voxels after refinement")
+    
+    print(f"\nFinal segmentation results:")
+    for mask_name, mask in segmentation_result.items():
+        if isinstance(mask, np.ndarray):
+            print(f"  {mask_name}: shape={mask.shape}, voxels={np.sum(mask):,}")
     
     return segmentation_result
 
