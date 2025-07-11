@@ -40,11 +40,15 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
     }
     
     # Overlay masks
+    print(f"Visualizing masks: {list(masks.keys())}")
     for mask_name, mask in masks.items():
-        if mask_name in colors and np.any(mask):
-            overlay = np.zeros((*ct_slice.shape, 4))
-            overlay[mask] = colors[mask_name]
-            ax.imshow(overlay)
+        if mask_name in colors:
+            mask_sum = np.sum(mask) if isinstance(mask, np.ndarray) else 0
+            print(f"  {mask_name}: sum={mask_sum}, shape={mask.shape if hasattr(mask, 'shape') else 'N/A'}")
+            if np.any(mask):
+                overlay = np.zeros((*ct_slice.shape, 4))
+                overlay[mask] = colors[mask_name]
+                ax.imshow(overlay)
 
     # Draw individual ROI regions if provided (preferred)
     roi_drawn = False
@@ -293,13 +297,22 @@ def create_multi_slice_view(ct_volume, masks_dict, slice_indices, roi_bounds=Non
         # Display CT slice
         ax.imshow(ct_volume[slice_idx], cmap='gray', vmin=-150, vmax=250)
         
+        # Debug output
+        if idx == 0:  # Only print for first slice to avoid spam
+            print(f"Multi-slice view debug for slice {slice_idx}:")
+            print(f"  Available masks: {list(masks_dict.keys())}")
+        
         # Overlay masks
         for mask_name, mask in masks_dict.items():
             if mask_name in colors and isinstance(mask, np.ndarray):
-                if mask.ndim == 3 and np.any(mask[slice_idx]):
-                    overlay = np.zeros((*ct_volume[slice_idx].shape, 4))
-                    overlay[mask[slice_idx]] = colors[mask_name]
-                    ax.imshow(overlay)
+                if mask.ndim == 3:
+                    slice_sum = np.sum(mask[slice_idx])
+                    if idx == 0:
+                        print(f"  {mask_name}: ndim=3, slice_sum={slice_sum}")
+                    if slice_sum > 0:
+                        overlay = np.zeros((*ct_volume[slice_idx].shape, 4))
+                        overlay[mask[slice_idx]] = colors[mask_name]
+                        ax.imshow(overlay)
         
         # Draw individual ROI regions if provided (preferred)
         if individual_regions and slice_idx in individual_regions:

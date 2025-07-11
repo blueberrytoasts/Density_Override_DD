@@ -587,11 +587,15 @@ if st.session_state.ct_volume is not None:
                 
                 # Create masks dict for current slice only - respect visibility settings
                 slice_masks = {}
+                st.write(f"Debug: Extracting masks for slice {current_slice}")
                 for name, mask in st.session_state.masks.items():
                     if isinstance(mask, np.ndarray) and mask.ndim == 3:
                         # Only include if visibility is enabled
-                        if st.session_state.contour_visibility.get(name, True):
+                        visibility = st.session_state.contour_visibility.get(name, True)
+                        st.write(f"  {name}: visible={visibility}, slice_sum={np.sum(mask[current_slice])}")
+                        if visibility:
                             slice_masks[name] = mask[current_slice]
+                st.write(f"Debug: slice_masks keys: {list(slice_masks.keys())}")
                 
                 # Convert roi_bounds_2d dict to tuple format expected by create_overlay_image
                 roi_boundaries_tuple = None
