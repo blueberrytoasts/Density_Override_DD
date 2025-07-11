@@ -54,9 +54,9 @@ def create_simplified_discrimination(ct_volume, metal_mask, spacing,
     # Artifacts: extend outward from bone, high variance, variable HU
     
     # Distance-based regions (ANATOMICALLY CORRECT)
-    # Bone (femur/acetabulum) is RIGHT NEXT to metal (0.5-2.5cm)
-    # Bright artifacts are the STREAKS extending outward (variable distance)
-    bone_zone = (distances_cm >= 0.5) & (distances_cm < 2.5)
+    # Bone (femur/acetabulum) can extend several cm from metal
+    # Bright artifacts are the STREAKS that can be anywhere
+    bone_zone = (distances_cm >= 0.3) & (distances_cm < 5.0)  # Expanded bone zone
     artifact_zone = (distances_cm >= 0.3) & (distances_cm <= max_distance_cm)
     
     # Initialize masks
@@ -64,14 +64,14 @@ def create_simplified_discrimination(ct_volume, metal_mask, spacing,
     artifact_mask = np.zeros_like(ct_volume, dtype=bool)
     
     # TRUE BONE characteristics (femur/acetabulum):
-    # - Adjacent to metal implant
+    # - Within reasonable distance of metal implant
     # - CONSISTENT high HU (true cortical/trabecular bone)
     # - Maintains structure after smoothing
-    # - Low variance between slices
+    # - Low to moderate variance between slices
     # - Anatomically expected location
     true_bone = candidates_mask & bone_zone & \
-                (smoothed > 600) & (local_std < 150) & \
-                (ct_volume > 500)  # True bone has consistently high HU
+                (smoothed > 400) & (local_std < 200) & \
+                (ct_volume > 400)  # Relaxed thresholds for bone
     
     # TRUE BRIGHT ARTIFACT characteristics (beam hardening streaks):
     # - Can be anywhere in the FOV
@@ -79,10 +79,11 @@ def create_simplified_discrimination(ct_volume, metal_mask, spacing,
     # - Variable/inconsistent HU values
     # - Changes dramatically between slices
     # - Often radial/directional patterns
+    # - Significant drop in HU after smoothing
     true_artifacts = candidates_mask & \
-                    ((local_std > 200) |  # High variance
-                     ((smoothed < 0.8 * ct_volume) & (ct_volume > 400)) |  # HU drops with smoothing
-                     (artifact_zone & (local_std > 100)))  # Moderate variance in artifact zone
+                    ((local_std > 250) |  # Very high variance for streaks
+                     ((smoothed < 0.7 * ct_volume) & (ct_volume > 400)) |  # Significant HU drop with smoothing
+                     ((distances_cm > 5.0) & (local_std > 150)))  # Far regions with moderate variance
     
     # Initial assignment with CORRECT anatomy
     bone_mask = true_bone
@@ -96,44 +97,45 @@ def create_simplified_discrimination(ct_volume, metal_mask, spacing,
         # Near metal + consistent HU = bone
         # High variance anywhere = artifact
         
-        # Bone criteria: close to metal, high persistent HU, low variance
+        # Bone criteria: within bone zone, moderate smoothed HU, not too variable
         additional_bone = unclassified & bone_zone & \
-                         (smoothed > 500) & (local_std < 180)
+                         (smoothed > 350) & (local_std < 220)
         
-        # Artifact criteria: high variance or inconsistent HU
+        # Artifact criteria: very high variance or significant smoothing difference
         additional_artifacts = unclassified & \
-                             ((local_std > 150) | \
-                              (np.abs(smoothed - ct_volume) > 200))
+                             ((local_std > 220) | \
+                              (np.abs(smoothed - ct_volume) > 300))
         
         bone_mask |= additional_bone
         artifact_mask |= additional_artifacts & (~bone_mask)
         
-        # Final assignment for remaining: use distance
+        # Final assignment for remaining: use distance and HU
         still_unclassified = unclassified & (~additional_bone) & (~additional_artifacts)
         if np.any(still_unclassified):
-            # Very close to metal -> probably bone
-            # Far from metal -> probably artifact
-            bone_mask |= still_unclassified & (distances_cm < 2.0)
-            artifact_mask |= still_unclassified & (distances_cm >= 2.0)
+            # Close to metal with high HU -> probably bone
+            # Far from metal or lower HU -> probably artifact
+            bone_mask |= still_unclassified & (distances_cm < 4.0) & (ct_volume > 450)
+            artifact_mask |= still_unclassified & ((distances_cm >= 4.0) | (ct_volume <= 450))
     
     # Post-processing to clean up
     bone_mask = binary_dilation(bone_mask, iterations=1)
     
     # Create confidence map based on corrected distance logic
     confidence_map = np.zeros_like(ct_volume, dtype=float)
-    # Bone confidence: highest when 1-2cm from metal
+    # Bone confidence: based on variance and HU consistency
     if np.any(bone_mask):
-        bone_distances = distances_cm[bone_mask]
-        # Peak confidence at 1.5cm, decreasing outward
-        bone_confidence = np.exp(-((bone_distances - 1.5) ** 2) / 2.0)
+        bone_variance = local_std[bone_mask]
+        bone_hu = ct_volume[bone_mask]
+        # Higher confidence for lower variance and higher HU
+        bone_confidence = (1.0 - bone_variance / 300.0) * (bone_hu / 1000.0)
         confidence_map[bone_mask] = np.clip(bone_confidence, 0.5, 1.0)
     
-    # Artifact confidence: increases with distance from metal (2-10cm)
+    # Artifact confidence: based on variance and distance
     if np.any(artifact_mask):
-        artifact_distances = distances_cm[artifact_mask]
-        # Higher confidence for artifacts farther from metal
-        artifact_confidence = (artifact_distances - 2.0) / 8.0
-        confidence_map[artifact_mask] = np.clip(artifact_confidence, 0.5, 1.0)
+        artifact_variance = local_std[artifact_mask]
+        # Higher confidence for higher variance (more streak-like)
+        artifact_confidence = np.clip(artifact_variance / 300.0, 0.5, 1.0)
+        confidence_map[artifact_mask] = artifact_confidence
     
     elapsed = time.time() - start_time
     print(f"Discrimination completed in {elapsed:.1f} seconds")
