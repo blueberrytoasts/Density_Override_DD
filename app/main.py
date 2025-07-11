@@ -466,6 +466,13 @@ if st.session_state.ct_volume is not None:
                                         use_fast_mode=True,
                                         use_enhanced_mode=False
                                     )
+                                
+                                # Update masks - this was missing for fast mode!
+                                if segmentation_result:
+                                    for mask_name in ['dark_artifacts', 'bone', 'bright_artifacts']:
+                                        mask = segmentation_result.get(mask_name)
+                                        if mask is not None:
+                                            st.session_state.masks[mask_name] = mask.astype(bool) if hasattr(mask, 'astype') else mask
                                     
                             elif segmentation_method == "Russian Doll with Enhanced Edge Analysis":
                                 # Use enhanced edge-based discrimination
@@ -522,7 +529,9 @@ if st.session_state.ct_volume is not None:
                                             st.write(f"  {name}: shape={mask.shape}, total={np.sum(mask):,}, dtype={mask.dtype}")
                                 else:
                                     st.warning("Segmentation returned no results")
-                                
+                            
+                            # Common code for both Russian doll methods (moved outside enhanced-only block)
+                            if segmentation_result and segmentation_method.startswith("Russian Doll"):
                                 # Store additional results for analysis
                                 if 'segmentation_info' not in st.session_state:
                                     st.session_state.segmentation_info = {}
@@ -538,6 +547,12 @@ if st.session_state.ct_volume is not None:
                                 bone_voxels = np.sum(st.session_state.masks['bone']) if 'bone' in st.session_state.masks else 0
                                 bright_voxels = np.sum(st.session_state.masks['bright_artifacts']) if 'bright_artifacts' in st.session_state.masks else 0
                                 st.info(f"Discriminated {bone_voxels:,} bone voxels from {bright_voxels:,} bright artifact voxels")
+                                
+                                # Debug output
+                                st.write("Debug: Final masks in session state:")
+                                for name, mask in st.session_state.masks.items():
+                                    if isinstance(mask, np.ndarray):
+                                        st.write(f"  {name}: shape={mask.shape}, total={np.sum(mask):,}")
                             else:
                                 # Legacy method
                                 bright_mask = create_bright_artifact_mask(
