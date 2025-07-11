@@ -4,6 +4,7 @@ from scipy.ndimage import binary_erosion, binary_dilation, binary_fill_holes, ge
 from artifact_discrimination import create_sequential_masks
 from artifact_discrimination_fast import create_fast_russian_doll_segmentation
 from artifact_discrimination_enhanced import create_enhanced_russian_doll_segmentation
+from artifact_discrimination_refinement import refine_bone_artifact_discrimination
 
 
 def boolean_subtract(mask1, mask2):
@@ -221,6 +222,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
                                    bright_artifact_max_distance_cm=10.0,
                                    use_fast_mode=True,
                                    use_enhanced_mode=False,
+                                   use_refinement=True,
                                    progress_callback=None):
     """
     Create segmentation using Russian doll approach with smart bone/artifact discrimination.
@@ -236,6 +238,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         bright_artifact_max_distance_cm: Max distance from metal for artifacts
         use_fast_mode: Use fast discrimination (distance-based) instead of profile analysis
         use_enhanced_mode: Use enhanced edge-based discrimination
+        use_refinement: Apply second-pass refinement to improve bone/artifact discrimination
         progress_callback: Optional callback function(progress, message) for progress updates
         
     Returns:
@@ -284,6 +287,19 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
     
     # Apply refinement to all masks
     print("\nApplying refinement to masks...")
+    # Apply second-pass refinement if requested
+    if use_refinement and 'bone' in segmentation_result and 'bright_artifacts' in segmentation_result:
+        print("\nApplying second-pass refinement...")
+        refinement_result = refine_bone_artifact_discrimination(
+            ct_volume, 
+            segmentation_result,
+            metal_mask,
+            spacing
+        )
+        # Update the masks
+        segmentation_result['bone'] = refinement_result['bone']
+        segmentation_result['bright_artifacts'] = refinement_result['bright_artifacts']
+    
     # Store originals in case refinement fails
     originals = {}
     for mask_name in ['dark_artifacts', 'bone', 'bright_artifacts']:
