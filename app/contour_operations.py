@@ -1,6 +1,6 @@
 import numpy as np
 import nibabel as nib
-from scipy.ndimage import binary_erosion, binary_dilation, binary_fill_holes
+from scipy.ndimage import binary_erosion, binary_dilation, binary_fill_holes, generate_binary_structure
 from artifact_discrimination import create_sequential_masks
 from artifact_discrimination_fast import create_fast_russian_doll_segmentation
 from artifact_discrimination_enhanced import create_enhanced_russian_doll_segmentation
@@ -128,22 +128,53 @@ def refine_mask(mask, min_size=10, fill_holes=True, smooth_iterations=1):
     
     refined_mask = mask.copy()
     
+    # Determine if this is a 3D mask
+    is_3d = mask.ndim == 3
+    
     # Fill holes if requested
-    if fill_holes:
-        refined_mask = binary_fill_holes(refined_mask)
+    if fill_holes and np.any(refined_mask):
+        try:
+            refined_mask = binary_fill_holes(refined_mask)
+        except:
+            print(f"  Warning: hole filling failed for shape {mask.shape}")
+    
+    # Use appropriate connectivity for labeling
+    if is_3d:
+        # 3D connectivity structure (26-connected)
+        struct = generate_binary_structure(3, 3)
+    else:
+        # 2D connectivity structure (8-connected)
+        struct = generate_binary_structure(2, 2)
     
     # Remove small components
-    labeled_array, num_features = label(refined_mask)
-    for i in range(1, num_features + 1):
-        component_mask = labeled_array == i
-        if np.sum(component_mask) < min_size:
-            refined_mask[component_mask] = False
+    labeled_array, num_features = label(refined_mask, structure=struct)
+    print(f"  Found {num_features} connected components (min_size={min_size})")
+    
+    if num_features > 0:
+        # Count component sizes
+        component_sizes = []
+        for i in range(1, num_features + 1):
+            component_mask = labeled_array == i
+            size = np.sum(component_mask)
+            component_sizes.append(size)
+            if size < min_size:
+                refined_mask[component_mask] = False
+        
+        if component_sizes:
+            print(f"  Component sizes: min={min(component_sizes)}, max={max(component_sizes)}, mean={np.mean(component_sizes):.1f}")
     
     # Smooth with morphological operations
-    if smooth_iterations > 0:
+    if smooth_iterations > 0 and np.any(refined_mask):
+        # Use 3D structuring element for 3D data
+        if is_3d:
+            struct_erode = generate_binary_structure(3, 1)  # 6-connected for erosion
+            struct_dilate = generate_binary_structure(3, 2)  # 18-connected for dilation
+        else:
+            struct_erode = struct_dilate = None
+            
         for _ in range(smooth_iterations):
-            refined_mask = binary_dilation(refined_mask, iterations=1)
-            refined_mask = binary_erosion(refined_mask, iterations=1)
+            refined_mask = binary_dilation(refined_mask, iterations=1, structure=struct_dilate)
+            refined_mask = binary_erosion(refined_mask, iterations=1, structure=struct_erode)
     
     return refined_mask
 
@@ -253,17 +284,37 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
     
     # Apply refinement to all masks
     print("\nApplying refinement to masks...")
+    # Store originals in case refinement fails
+    originals = {}
     for mask_name in ['dark_artifacts', 'bone', 'bright_artifacts']:
         if mask_name in segmentation_result:
+            originals[mask_name] = segmentation_result[mask_name].copy()
             original_count = np.sum(segmentation_result[mask_name])
+            
+            # Use different refinement parameters based on the mode
+            if use_enhanced_mode:
+                # For enhanced mode, be much more conservative
+                # The edge analysis already produces clean results
+                min_component_size = 5 if mask_name == 'bone' else 3
+                smooth_iters = 0  # No smoothing - preserve edge details
+            else:
+                # Original parameters for other modes
+                min_component_size = 10
+                smooth_iters = 1
+            
             segmentation_result[mask_name] = refine_mask(
                 segmentation_result[mask_name], 
-                min_size=10,
+                min_size=min_component_size,
                 fill_holes=True,
-                smooth_iterations=1
+                smooth_iterations=smooth_iters
             )
             refined_count = np.sum(segmentation_result[mask_name])
             print(f"  {mask_name}: {original_count:,} -> {refined_count:,} voxels after refinement")
+            
+            # Safety check - if refinement removed everything, restore original
+            if refined_count == 0 and original_count > 0:
+                print(f"  WARNING: Refinement removed all {mask_name} voxels! Restoring original.")
+                segmentation_result[mask_name] = originals[mask_name]
     
     print(f"\nFinal segmentation results:")
     for mask_name, mask in segmentation_result.items():
