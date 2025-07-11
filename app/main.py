@@ -516,17 +516,7 @@ if st.session_state.ct_volume is not None:
                                             # Ensure mask is boolean
                                             st.session_state.masks[mask_name] = mask.astype(bool) if hasattr(mask, 'astype') else mask
                                     
-                                    # Log what we got
-                                    dark_count = np.sum(segmentation_result.get('dark_artifacts', np.zeros(1))) 
-                                    bone_count = np.sum(segmentation_result.get('bone', np.zeros(1)))
-                                    bright_count = np.sum(segmentation_result.get('bright_artifacts', np.zeros(1)))
-                                    st.write(f"Debug: Dark={dark_count:,}, Bone={bone_count:,}, Bright={bright_count:,}")
                                     
-                                    # Debug: Check what's in session state
-                                    st.write("Debug: Masks in session state:")
-                                    for name, mask in st.session_state.masks.items():
-                                        if isinstance(mask, np.ndarray):
-                                            st.write(f"  {name}: shape={mask.shape}, total={np.sum(mask):,}, dtype={mask.dtype}")
                                 else:
                                     st.warning("Segmentation returned no results")
                             
@@ -548,11 +538,6 @@ if st.session_state.ct_volume is not None:
                                 bright_voxels = np.sum(st.session_state.masks['bright_artifacts']) if 'bright_artifacts' in st.session_state.masks else 0
                                 st.info(f"Discriminated {bone_voxels:,} bone voxels from {bright_voxels:,} bright artifact voxels")
                                 
-                                # Debug output
-                                st.write("Debug: Final masks in session state:")
-                                for name, mask in st.session_state.masks.items():
-                                    if isinstance(mask, np.ndarray):
-                                        st.write(f"  {name}: shape={mask.shape}, total={np.sum(mask):,}")
                             else:
                                 # Legacy method
                                 bright_mask = create_bright_artifact_mask(
@@ -602,15 +587,11 @@ if st.session_state.ct_volume is not None:
                 
                 # Create masks dict for current slice only - respect visibility settings
                 slice_masks = {}
-                st.write(f"Debug: Extracting masks for slice {current_slice}")
                 for name, mask in st.session_state.masks.items():
                     if isinstance(mask, np.ndarray) and mask.ndim == 3:
                         # Only include if visibility is enabled
-                        visibility = st.session_state.contour_visibility.get(name, True)
-                        st.write(f"  {name}: visible={visibility}, slice_sum={np.sum(mask[current_slice])}")
-                        if visibility:
+                        if st.session_state.contour_visibility.get(name, True):
                             slice_masks[name] = mask[current_slice]
-                st.write(f"Debug: slice_masks keys: {list(slice_masks.keys())}")
                 
                 # Convert roi_bounds_2d dict to tuple format expected by create_overlay_image
                 roi_boundaries_tuple = None
