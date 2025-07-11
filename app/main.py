@@ -502,16 +502,24 @@ if st.session_state.ct_volume is not None:
                                 status_text.empty()
                                 
                                 if segmentation_result:
-                                    # Update masks for both Russian doll methods
-                                    st.session_state.masks['dark_artifacts'] = segmentation_result.get('dark_artifacts')
-                                    st.session_state.masks['bone'] = segmentation_result.get('bone')
-                                    st.session_state.masks['bright_artifacts'] = segmentation_result.get('bright_artifacts')
+                                    # Update masks for both Russian doll methods - ensure they're boolean
+                                    for mask_name in ['dark_artifacts', 'bone', 'bright_artifacts']:
+                                        mask = segmentation_result.get(mask_name)
+                                        if mask is not None:
+                                            # Ensure mask is boolean
+                                            st.session_state.masks[mask_name] = mask.astype(bool) if hasattr(mask, 'astype') else mask
                                     
                                     # Log what we got
                                     dark_count = np.sum(segmentation_result.get('dark_artifacts', np.zeros(1))) 
                                     bone_count = np.sum(segmentation_result.get('bone', np.zeros(1)))
                                     bright_count = np.sum(segmentation_result.get('bright_artifacts', np.zeros(1)))
                                     st.write(f"Debug: Dark={dark_count:,}, Bone={bone_count:,}, Bright={bright_count:,}")
+                                    
+                                    # Debug: Check what's in session state
+                                    st.write("Debug: Masks in session state:")
+                                    for name, mask in st.session_state.masks.items():
+                                        if isinstance(mask, np.ndarray):
+                                            st.write(f"  {name}: shape={mask.shape}, total={np.sum(mask):,}, dtype={mask.dtype}")
                                 else:
                                     st.warning("Segmentation returned no results")
                                 
