@@ -200,7 +200,14 @@ with st.sidebar:
             
             col1, col2 = st.columns(2)
             with col1:
-                dark_high = st.number_input("Dark Artifact Max HU", value=-150)
+                dark_low, dark_high = st.slider(
+                    "Dark Artifact HU Range",
+                    min_value=-1000,
+                    max_value=0,
+                    value=(-1000, -150),
+                    step=10,
+                    help="Hounsfield Unit range for dark artifacts"
+                )
                 bone_low = st.number_input("Bone/Bright Min HU", value=300)
             with col2:
                 bone_high = st.number_input("Bone/Bright Max HU", value=1500)
@@ -223,7 +230,15 @@ with st.sidebar:
             
             col1, col2 = st.columns(2)
             with col1:
-                dark_high = st.number_input("Dark Artifact Max HU", value=-150, key="enh_dark")
+                dark_low, dark_high = st.slider(
+                    "Dark Artifact HU Range",
+                    min_value=-1000,
+                    max_value=0,
+                    value=(-1000, -150),
+                    step=10,
+                    help="Hounsfield Unit range for dark artifacts",
+                    key="enh_dark_range"
+                )
                 bone_low = st.number_input("Bone/Bright Min HU", value=300, key="enh_bone_low")
             with col2:
                 bone_high = st.number_input("Bone/Bright Max HU", value=1500, key="enh_bone_high")
@@ -253,7 +268,15 @@ with st.sidebar:
             col1, col2 = st.columns(2)
             with col1:
                 bright_low = st.number_input("Bright Artifact Min HU", value=800)
-                dark_high = st.number_input("Dark Artifact Max HU", value=-200)
+                dark_low, dark_high = st.slider(
+                    "Dark Artifact HU Range",
+                    min_value=-1000,
+                    max_value=0,
+                    value=(-1000, -200),
+                    step=10,
+                    help="Hounsfield Unit range for dark artifacts",
+                    key="legacy_dark_range"
+                )
             with col2:
                 bright_high = st.number_input("Bright Artifact Max HU", value=3000)
                 bone_low = st.number_input("Bone Min HU", value=150)
@@ -459,7 +482,8 @@ if st.session_state.ct_volume is not None:
                                         metal_mask,
                                         st.session_state.ct_metadata['spacing'],
                                         roi_bounds,
-                                        dark_threshold_high=dark_high,
+                                        dark_threshold_low=dark_low,
+                                dark_threshold_high=dark_high,
                                         bone_threshold_low=bone_low,
                                         bone_threshold_high=bone_high,
                                         bright_artifact_max_distance_cm=artifact_distance_cm,
@@ -489,7 +513,8 @@ if st.session_state.ct_volume is not None:
                                         metal_mask,
                                         st.session_state.ct_metadata['spacing'],
                                         roi_bounds,
-                                        dark_threshold_high=dark_high,
+                                        dark_threshold_low=dark_low,
+                                dark_threshold_high=dark_high,
                                         bone_threshold_low=bone_low,
                                         bone_threshold_high=bone_high,
                                         bright_artifact_max_distance_cm=artifact_distance_cm,
@@ -552,7 +577,8 @@ if st.session_state.ct_volume is not None:
                                     st.session_state.ct_volume,
                                     metal_mask,
                                     roi_bounds,
-                                    dark_high
+                                    dark_low,
+                                dark_high
                                 )
                                 
                                 bone_mask = create_bone_mask(
@@ -645,7 +671,7 @@ if st.session_state.ct_volume is not None:
                     st.text("Metal: Default thresholds")
                 
                 st.text(f"Bright: {bright_low} - {bright_high} HU")
-                st.text(f"Dark: < {dark_high} HU")
+                st.text(f"Dark: {dark_low} - {dark_high} HU")
                 st.text(f"Bone: {bone_low} - {bone_high} HU")
             
             # Display pixel counts

@@ -82,7 +82,7 @@ def create_bright_artifact_mask(ct_volume, metal_mask, roi_bounds,
 
 
 def create_dark_artifact_mask(ct_volume, metal_mask, roi_bounds,
-                             dark_threshold_high=-200):
+                             dark_threshold_low=-1000, dark_threshold_high=-150):
     """
     Create dark artifact mask for low HU streaking artifacts.
     
@@ -90,13 +90,14 @@ def create_dark_artifact_mask(ct_volume, metal_mask, roi_bounds,
         ct_volume: 3D CT data in HU
         metal_mask: 3D binary mask of metal
         roi_bounds: Dictionary with ROI boundaries
+        dark_threshold_low: Lower HU threshold for dark artifacts
         dark_threshold_high: Upper HU threshold for dark artifacts
         
     Returns:
         3D binary mask of dark artifacts
     """
     # Create dark region mask
-    dark_mask = ct_volume <= dark_threshold_high
+    dark_mask = (ct_volume >= dark_threshold_low) & (ct_volume <= dark_threshold_high)
     
     # Constrain to ROI
     roi_mask = np.zeros_like(ct_volume, dtype=bool)
@@ -217,7 +218,7 @@ def create_bone_mask(ct_volume, metal_mask, bright_mask, dark_mask, roi_bounds,
 
 
 def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=None,
-                                   dark_threshold_high=-150,
+                                   dark_threshold_low=-1000, dark_threshold_high=-150,
                                    bone_threshold_low=300, bone_threshold_high=1500,
                                    bright_artifact_max_distance_cm=10.0,
                                    use_fast_mode=True,
@@ -232,6 +233,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         metal_mask: Already segmented metal mask
         spacing: Voxel spacing (z, y, x) in mm
         roi_bounds: Optional ROI bounds to constrain analysis
+        dark_threshold_low: Lower threshold for dark artifacts
         dark_threshold_high: Upper threshold for dark artifacts
         bone_threshold_low: Lower threshold for bone/bright artifacts
         bone_threshold_high: Upper threshold for bone/bright artifacts
@@ -250,7 +252,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             ct_volume,
             metal_mask,
             spacing,
-            dark_range=(-1024, dark_threshold_high),
+            dark_range=(dark_threshold_low, dark_threshold_high),
             bone_range=(bone_threshold_low, bone_threshold_high),
             max_distance_cm=bright_artifact_max_distance_cm,
             progress_callback=progress_callback
@@ -260,7 +262,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             ct_volume,
             metal_mask,
             spacing,
-            dark_range=(-1024, dark_threshold_high),
+            dark_range=(dark_threshold_low, dark_threshold_high),
             bone_range=(bone_threshold_low, bone_threshold_high),
             max_distance_cm=bright_artifact_max_distance_cm
         )
@@ -269,7 +271,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             ct_volume, 
             metal_mask, 
             spacing,
-            dark_range=(-1024, dark_threshold_high),
+            dark_range=(dark_threshold_low, dark_threshold_high),
             bone_range=(bone_threshold_low, bone_threshold_high),
             bright_artifact_max_distance_cm=bright_artifact_max_distance_cm
         )
