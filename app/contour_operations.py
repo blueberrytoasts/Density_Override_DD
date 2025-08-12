@@ -222,6 +222,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
                                    bright_artifact_max_distance_cm=10.0,
                                    use_fast_mode=True,
                                    use_enhanced_mode=False,
+                                   use_advanced_mode=False,
                                    use_refinement=True,
                                    progress_callback=None):
     """
@@ -238,6 +239,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         bright_artifact_max_distance_cm: Max distance from metal for artifacts
         use_fast_mode: Use fast discrimination (distance-based) instead of profile analysis
         use_enhanced_mode: Use enhanced edge-based discrimination
+        use_advanced_mode: Use advanced texture/gradient-based discrimination
         use_refinement: Apply second-pass refinement to improve bone/artifact discrimination
         progress_callback: Optional callback function(progress, message) for progress updates
         
@@ -245,7 +247,34 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         dict: All segmentation masks including discrimination results
     """
     # Choose discrimination method
-    if use_enhanced_mode:
+    if use_advanced_mode:
+        # Use new advanced texture/gradient-based discrimination
+        from artifact_discrimination_advanced import classify_bone_vs_artifact
+        
+        # First segment dark artifacts (excluding metal)
+        dark_mask = (ct_volume >= -1024) & (ct_volume <= dark_threshold_high)
+        dark_mask = boolean_subtract(dark_mask, metal_mask)
+        
+        # Get bright regions that need discrimination
+        bright_mask = (ct_volume >= bone_threshold_low) & (ct_volume <= bone_threshold_high)
+        bright_mask = boolean_subtract(bright_mask, metal_mask)
+        bright_mask = boolean_subtract(bright_mask, dark_mask)
+        
+        # Apply advanced discrimination
+        bone_mask, bright_artifacts, confidence_map = classify_bone_vs_artifact(
+            ct_volume, bright_mask, metal_mask
+        )
+        
+        segmentation_result = {
+            'metal': metal_mask,
+            'dark_artifacts': dark_mask,
+            'bright_artifacts': bright_artifacts,
+            'bone': bone_mask,
+            'confidence_map': confidence_map,
+            'method': 'advanced_texture_gradient'
+        }
+        
+    elif use_enhanced_mode:
         segmentation_result = create_enhanced_russian_doll_segmentation(
             ct_volume,
             metal_mask,

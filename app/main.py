@@ -198,9 +198,10 @@ with st.sidebar:
         segmentation_method = st.radio(
             "Segmentation Approach",
             ["Russian Doll with Smart Discrimination (Recommended)", 
-             "Russian Doll with Enhanced Edge Analysis", 
+             "Russian Doll with Enhanced Edge Analysis",
+             "Russian Doll with Advanced Texture/Gradient Analysis (Best Accuracy)",
              "Legacy Threshold-Based"],
-            help="Russian Doll: Fast distance-based discrimination. Enhanced: Edge coherence and structural analysis. Legacy: Simple threshold-based."
+            help="Smart: Fast distance-based. Enhanced: Edge coherence analysis. Advanced: Texture/gradient ML-based (most accurate). Legacy: Simple threshold-based."
         )
         
         # Add reset button
@@ -319,6 +320,85 @@ with st.sidebar:
             st.markdown("- Radial vs tangential feature analysis")
             st.markdown("- 3D structural continuity tracking")
             st.markdown("- Multi-scale edge persistence")
+            
+            # For compatibility
+            bright_low = bone_low
+            bright_high = 3000
+            
+        elif segmentation_method == "Russian Doll with Advanced Texture/Gradient Analysis (Best Accuracy)":
+            st.info("🔬 Advanced ML-based analysis using texture features (LBP, GLCM) and gradient analysis (LoG)")
+            st.success("✨ Most accurate discrimination between bone and bright artifacts")
+            
+            # Use star profile calculated thresholds if available
+            if 'metal_detection_result' in st.session_state and st.session_state.metal_detection_result:
+                if 'threshold_evolution' in st.session_state.metal_detection_result:
+                    # Get the final threshold from star profile
+                    final_threshold = st.session_state.metal_detection_result['threshold_evolution'][-1]
+                    st.info(f"📊 Using star profile calculated metal threshold: {final_threshold:.0f} HU")
+                    
+                    # Update defaults based on calculated threshold
+                    default_bright_min = max(300, final_threshold - 2200)
+                    default_bright_max = min(final_threshold - 500, 1500)
+                else:
+                    default_bright_min = 300
+                    default_bright_max = 1500
+            else:
+                default_bright_min = 300
+                default_bright_max = 1500
+            
+            # Dark Artifacts Range Slider
+            st.markdown("**Dark Artifacts (Beam Hardening)**")
+            dark_range_adv = st.slider(
+                "Dark Artifact HU Range",
+                min_value=int(ThresholdConfig.DARK_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.DARK_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds.get('advanced', {}).get('dark_min', -1024)),
+                       int(st.session_state.thresholds.get('advanced', {}).get('dark_max', -150))),
+                step=int(ThresholdConfig.DARK_ARTIFACTS.step),
+                help=ThresholdConfig.DARK_ARTIFACTS.help_text,
+                key="dark_range_slider_adv"
+            )
+            
+            # Initialize advanced thresholds if not exists
+            if 'advanced' not in st.session_state.thresholds:
+                st.session_state.thresholds['advanced'] = {}
+            
+            st.session_state.thresholds['advanced']['dark_min'] = dark_range_adv[0]
+            st.session_state.thresholds['advanced']['dark_max'] = dark_high = dark_range_adv[1]
+            
+            # Bright/Bone Range with calculated defaults
+            st.markdown("**Bright Artifacts & Bone Tissue**")
+            bright_range_adv = st.slider(
+                "Bright/Bone HU Range (Auto-adjusted from star profile)",
+                min_value=int(ThresholdConfig.BRIGHT_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.BRIGHT_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds.get('advanced', {}).get('bright_min', default_bright_min)),
+                       int(st.session_state.thresholds.get('advanced', {}).get('bright_max', default_bright_max))),
+                step=int(ThresholdConfig.BRIGHT_ARTIFACTS.step),
+                help="Range auto-adjusted based on detected metal threshold",
+                key="bright_range_slider_adv"
+            )
+            st.session_state.thresholds['advanced']['bright_min'] = bone_low = bright_range_adv[0]
+            st.session_state.thresholds['advanced']['bright_max'] = bone_high = bright_range_adv[1]
+            
+            # Distance from Metal
+            artifact_distance_cm = st.slider(
+                "Max Artifact Distance from Metal (cm)",
+                min_value=ThresholdConfig.MAX_ARTIFACT_DISTANCE.min_bound,
+                max_value=ThresholdConfig.MAX_ARTIFACT_DISTANCE.max_bound,
+                value=st.session_state.thresholds.get('advanced', {}).get('max_distance', 10.0),
+                step=ThresholdConfig.MAX_ARTIFACT_DISTANCE.step,
+                help="Distance weighting for artifact probability",
+                key="adv_dist"
+            )
+            st.session_state.thresholds['advanced']['max_distance'] = artifact_distance_cm
+            
+            st.markdown("**Advanced Features:**")
+            st.markdown("- 🎨 **Texture Analysis**: LBP patterns, GLCM features, local variance")
+            st.markdown("- 📈 **Gradient Analysis**: Laplacian of Gaussian, gradient direction variance")
+            st.markdown("- 🧠 **Structure Tensor**: Coherence and anisotropy measures")
+            st.markdown("- 🎯 **Confidence Scoring**: Per-voxel classification confidence")
+            st.markdown("- 🔬 **Post-processing**: Morphological refinement and connected components")
             
             # For compatibility
             bright_low = bone_low
@@ -590,6 +670,44 @@ if st.session_state.ct_volume is not None:
                                         if mask is not None:
                                             st.session_state.masks[mask_name] = mask.astype(bool) if hasattr(mask, 'astype') else mask
                                     
+                            elif segmentation_method == "Russian Doll with Advanced Texture/Gradient Analysis (Best Accuracy)":
+                                # Use advanced texture/gradient-based discrimination
+                                with st.spinner("Running advanced texture/gradient analysis... This may take a moment."):
+                                    segmentation_result = create_russian_doll_segmentation(
+                                        st.session_state.ct_volume,
+                                        metal_mask,
+                                        st.session_state.ct_metadata['spacing'],
+                                        roi_bounds,
+                                        dark_threshold_high=dark_high,
+                                        bone_threshold_low=bone_low,
+                                        bone_threshold_high=bone_high,
+                                        bright_artifact_max_distance_cm=artifact_distance_cm,
+                                        use_fast_mode=False,
+                                        use_enhanced_mode=False,
+                                        use_advanced_mode=True
+                                    )
+                                
+                                # Update masks with advanced results
+                                if segmentation_result:
+                                    for mask_name in ['dark_artifacts', 'bone', 'bright_artifacts']:
+                                        mask = segmentation_result.get(mask_name)
+                                        if mask is not None:
+                                            st.session_state.masks[mask_name] = mask.astype(bool) if hasattr(mask, 'astype') else mask
+                                    
+                                    # Store confidence map for visualization
+                                    if 'confidence_map' in segmentation_result:
+                                        st.session_state.segmentation_info = {
+                                            'confidence_map': segmentation_result['confidence_map'],
+                                            'method': 'advanced_texture_gradient'
+                                        }
+                                        
+                                        # Show confidence statistics
+                                        conf_map = segmentation_result['confidence_map']
+                                        if np.any(conf_map > 0):
+                                            avg_conf = np.mean(conf_map[conf_map > 0])
+                                            high_conf = np.sum(conf_map > 0.7) / np.sum(conf_map > 0)
+                                            st.success(f"✅ Advanced discrimination complete! Avg confidence: {avg_conf:.1%}, High confidence: {high_conf:.1%}")
+                                
                             elif segmentation_method == "Russian Doll with Enhanced Edge Analysis":
                                 # Use enhanced edge-based discrimination
                                 progress_bar = st.progress(0)
