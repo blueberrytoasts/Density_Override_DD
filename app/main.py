@@ -14,7 +14,9 @@ from contour_operations import (create_bright_artifact_mask, create_dark_artifac
                                create_russian_doll_segmentation)
 from visualization import (create_overlay_image, create_histogram, fig_to_base64, 
                           create_multi_slice_view, visualize_star_profiles,
-                          plot_threshold_evolution, visualize_discrimination_slice)
+                          plot_threshold_evolution, visualize_discrimination_slice,
+                          create_histogram_with_thresholds, create_threshold_preview)
+from config import ThresholdConfig, init_threshold_state, reset_thresholds, validate_all_thresholds
 
 # Page configuration
 st.set_page_config(
@@ -48,6 +50,9 @@ if 'ct_volume' not in st.session_state:
     st.session_state.selected_patient = None
     st.session_state.metal_detection_result = None
     st.session_state.affine = None
+
+# Initialize threshold configuration state
+init_threshold_state()
 
 # Header
 st.title("🏥 CT Metal Artifact Characterization")
@@ -158,14 +163,17 @@ with st.sidebar:
                 help="Margin around detected metal in centimeters"
             )
             
-            min_metal_hu = st.number_input(
+            # Metal Detection Threshold Slider
+            min_metal_hu = st.slider(
                 "Initial Metal Threshold (HU)",
-                value=2000,
-                min_value=1000,
-                max_value=4000,
-                step=100,
-                help="Minimum HU to detect metal cluster"
+                min_value=int(ThresholdConfig.METAL_THRESHOLD.min_bound),
+                max_value=int(ThresholdConfig.METAL_THRESHOLD.max_bound),
+                value=int(st.session_state.thresholds['metal_detection']['metal_threshold']),
+                step=int(ThresholdConfig.METAL_THRESHOLD.step),
+                help=ThresholdConfig.METAL_THRESHOLD.help_text,
+                key="metal_threshold_slider"
             )
+            st.session_state.thresholds['metal_detection']['metal_threshold'] = min_metal_hu
             
             fw_percentage = st.slider(
                 "Full Width Percentage",
@@ -195,25 +203,67 @@ with st.sidebar:
             help="Russian Doll: Fast distance-based discrimination. Enhanced: Edge coherence and structural analysis. Legacy: Simple threshold-based."
         )
         
+        # Add reset button
+        col_reset1, col_reset2 = st.columns([1, 2])
+        with col_reset1:
+            if st.button("🔄 Reset to Defaults", help="Reset all thresholds to default values"):
+                if segmentation_method == "Legacy Threshold-Based":
+                    reset_thresholds('legacy')
+                else:
+                    reset_thresholds('russian_doll')
+                st.rerun()
+        
         if segmentation_method == "Russian Doll with Smart Discrimination (Recommended)":
             st.info("🧠 Uses distance-based analysis for fast bone/artifact discrimination")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                dark_high = st.number_input("Dark Artifact Max HU", value=-150)
-                bone_low = st.number_input("Bone/Bright Min HU", value=300)
-            with col2:
-                bone_high = st.number_input("Bone/Bright Max HU", value=1500)
-                artifact_distance_cm = st.slider(
-                    "Max Artifact Distance from Metal (cm)",
-                    min_value=2.0,
-                    max_value=15.0,
-                    value=10.0,
-                    step=1.0,
-                    help="Maximum distance from metal to consider for bright artifacts"
-                )
+            # Dark Artifacts Range Slider
+            st.markdown("**Dark Artifacts (Beam Hardening)**")
+            dark_range = st.slider(
+                "Dark Artifact HU Range",
+                min_value=int(ThresholdConfig.DARK_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.DARK_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds['russian_doll']['dark_min']),
+                       int(st.session_state.thresholds['russian_doll']['dark_max'])),
+                step=int(ThresholdConfig.DARK_ARTIFACTS.step),
+                help=ThresholdConfig.DARK_ARTIFACTS.help_text,
+                key="dark_range_slider"
+            )
+            st.session_state.thresholds['russian_doll']['dark_min'] = dark_range[0]
+            st.session_state.thresholds['russian_doll']['dark_max'] = dark_high = dark_range[1]
             
-            # Not used in Russian doll method but keep for compatibility
+            # Bright Artifacts/Bone Range Slider
+            st.markdown("**Bright Artifacts & Bone Tissue**")
+            bright_range = st.slider(
+                "Bright/Bone HU Range",
+                min_value=int(ThresholdConfig.BRIGHT_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.BRIGHT_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds['russian_doll']['bright_min']),
+                       int(st.session_state.thresholds['russian_doll']['bright_max'])),
+                step=int(ThresholdConfig.BRIGHT_ARTIFACTS.step),
+                help=ThresholdConfig.BRIGHT_ARTIFACTS.help_text,
+                key="bright_range_slider"
+            )
+            st.session_state.thresholds['russian_doll']['bright_min'] = bone_low = bright_range[0]
+            st.session_state.thresholds['russian_doll']['bright_max'] = bone_high = bright_range[1]
+            
+            # Distance from Metal
+            artifact_distance_cm = st.slider(
+                "Max Artifact Distance from Metal (cm)",
+                min_value=ThresholdConfig.MAX_ARTIFACT_DISTANCE.min_bound,
+                max_value=ThresholdConfig.MAX_ARTIFACT_DISTANCE.max_bound,
+                value=st.session_state.thresholds['russian_doll']['max_distance'],
+                step=ThresholdConfig.MAX_ARTIFACT_DISTANCE.step,
+                help=ThresholdConfig.MAX_ARTIFACT_DISTANCE.help_text
+            )
+            st.session_state.thresholds['russian_doll']['max_distance'] = artifact_distance_cm
+            
+            # Validation feedback
+            is_valid, errors = validate_all_thresholds()
+            if not is_valid:
+                for error in errors:
+                    st.error(error)
+            
+            # For compatibility
             bright_low = bone_low
             bright_high = 3000
             
@@ -221,21 +271,47 @@ with st.sidebar:
             st.info("🔬 Advanced edge coherence analysis for superior bone/artifact discrimination")
             st.warning("⚠️ This method is slower but provides better accuracy for challenging cases")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                dark_high = st.number_input("Dark Artifact Max HU", value=-150, key="enh_dark")
-                bone_low = st.number_input("Bone/Bright Min HU", value=300, key="enh_bone_low")
-            with col2:
-                bone_high = st.number_input("Bone/Bright Max HU", value=1500, key="enh_bone_high")
-                artifact_distance_cm = st.slider(
-                    "Max Analysis Distance (cm)",
-                    min_value=2.0,
-                    max_value=15.0,
-                    value=10.0,
-                    step=1.0,
-                    help="Maximum distance from metal to analyze",
-                    key="enh_dist"
-                )
+            # Dark Artifacts Range Slider
+            st.markdown("**Dark Artifacts (Beam Hardening)**")
+            dark_range_enh = st.slider(
+                "Dark Artifact HU Range",
+                min_value=int(ThresholdConfig.DARK_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.DARK_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds['russian_doll']['dark_min']),
+                       int(st.session_state.thresholds['russian_doll']['dark_max'])),
+                step=int(ThresholdConfig.DARK_ARTIFACTS.step),
+                help=ThresholdConfig.DARK_ARTIFACTS.help_text,
+                key="dark_range_slider_enh"
+            )
+            st.session_state.thresholds['russian_doll']['dark_min'] = dark_range_enh[0]
+            st.session_state.thresholds['russian_doll']['dark_max'] = dark_high = dark_range_enh[1]
+            
+            # Bright Artifacts/Bone Range Slider
+            st.markdown("**Bright Artifacts & Bone Tissue**")
+            bright_range_enh = st.slider(
+                "Bright/Bone HU Range",
+                min_value=int(ThresholdConfig.BRIGHT_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.BRIGHT_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds['russian_doll']['bright_min']),
+                       int(st.session_state.thresholds['russian_doll']['bright_max'])),
+                step=int(ThresholdConfig.BRIGHT_ARTIFACTS.step),
+                help=ThresholdConfig.BRIGHT_ARTIFACTS.help_text,
+                key="bright_range_slider_enh"
+            )
+            st.session_state.thresholds['russian_doll']['bright_min'] = bone_low = bright_range_enh[0]
+            st.session_state.thresholds['russian_doll']['bright_max'] = bone_high = bright_range_enh[1]
+            
+            # Distance from Metal
+            artifact_distance_cm = st.slider(
+                "Max Analysis Distance (cm)",
+                min_value=ThresholdConfig.MAX_ARTIFACT_DISTANCE.min_bound,
+                max_value=ThresholdConfig.MAX_ARTIFACT_DISTANCE.max_bound,
+                value=st.session_state.thresholds['russian_doll']['max_distance'],
+                step=ThresholdConfig.MAX_ARTIFACT_DISTANCE.step,
+                help=ThresholdConfig.MAX_ARTIFACT_DISTANCE.help_text,
+                key="enh_dist"
+            )
+            st.session_state.thresholds['russian_doll']['max_distance'] = artifact_distance_cm
             
             st.markdown("**Enhanced Features:**")
             st.markdown("- Edge coherence analysis (bone has continuous edges)")
@@ -244,21 +320,61 @@ with st.sidebar:
             st.markdown("- 3D structural continuity tracking")
             st.markdown("- Multi-scale edge persistence")
             
-            # Not used in Russian doll method but keep for compatibility
+            # For compatibility
             bright_low = bone_low
             bright_high = 3000
             
         else:
-            # Legacy parameters
-            col1, col2 = st.columns(2)
-            with col1:
-                bright_low = st.number_input("Bright Artifact Min HU", value=800)
-                dark_high = st.number_input("Dark Artifact Max HU", value=-200)
-            with col2:
-                bright_high = st.number_input("Bright Artifact Max HU", value=3000)
-                bone_low = st.number_input("Bone Min HU", value=150)
+            # Legacy parameters with sliders
+            st.markdown("**Legacy Threshold-Based Method**")
             
-            bone_high = st.number_input("Bone Max HU", value=1500)
+            # Bright Artifacts Range
+            st.markdown("**Bright Artifacts**")
+            legacy_bright_range = st.slider(
+                "Bright Artifact HU Range",
+                min_value=int(ThresholdConfig.LEGACY_BRIGHT_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.LEGACY_BRIGHT_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds['legacy']['bright_min']),
+                       int(st.session_state.thresholds['legacy']['bright_max'])),
+                step=int(ThresholdConfig.LEGACY_BRIGHT_ARTIFACTS.step),
+                help=ThresholdConfig.LEGACY_BRIGHT_ARTIFACTS.help_text,
+                key="legacy_bright_slider"
+            )
+            bright_low = legacy_bright_range[0]
+            bright_high = legacy_bright_range[1]
+            st.session_state.thresholds['legacy']['bright_min'] = bright_low
+            st.session_state.thresholds['legacy']['bright_max'] = bright_high
+            
+            # Dark Artifacts Threshold
+            st.markdown("**Dark Artifacts**")
+            dark_high = st.slider(
+                "Dark Artifact Maximum HU",
+                min_value=int(ThresholdConfig.LEGACY_DARK_THRESHOLD.min_bound),
+                max_value=int(ThresholdConfig.LEGACY_DARK_THRESHOLD.max_bound),
+                value=int(st.session_state.thresholds['legacy']['dark_max']),
+                step=int(ThresholdConfig.LEGACY_DARK_THRESHOLD.step),
+                help=ThresholdConfig.LEGACY_DARK_THRESHOLD.help_text,
+                key="legacy_dark_slider"
+            )
+            st.session_state.thresholds['legacy']['dark_max'] = dark_high
+            
+            # Bone Tissue Range
+            st.markdown("**Bone Tissue**")
+            bone_range = st.slider(
+                "Bone HU Range",
+                min_value=int(ThresholdConfig.BONE_TISSUE.min_bound),
+                max_value=int(ThresholdConfig.BONE_TISSUE.max_bound),
+                value=(int(st.session_state.thresholds['legacy']['bone_min']),
+                       int(st.session_state.thresholds['legacy']['bone_max'])),
+                step=int(ThresholdConfig.BONE_TISSUE.step),
+                help=ThresholdConfig.BONE_TISSUE.help_text,
+                key="legacy_bone_slider"
+            )
+            bone_low = bone_range[0]
+            bone_high = bone_range[1]
+            st.session_state.thresholds['legacy']['bone_min'] = bone_low
+            st.session_state.thresholds['legacy']['bone_max'] = bone_high
+            
             artifact_distance_cm = 10.0  # Default for compatibility
     
     st.markdown("---")
@@ -368,8 +484,8 @@ with st.sidebar:
 # Main content area
 if st.session_state.ct_volume is not None:
     # Create tabs for different views
-    tab1, tab2, tab3, tab4 = st.tabs(["Single Slice Analysis", "Multi-Slice View", 
-                                       "Metal Detection Details", "Statistics"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Single Slice Analysis", "Multi-Slice View", 
+                                       "Metal Detection Details", "Statistics", "Threshold Preview"])
     
     with tab1:
         col1, col2 = st.columns([2, 1])
@@ -910,6 +1026,87 @@ if st.session_state.ct_volume is not None:
                     plt.close()
         else:
             st.info("Perform segmentation to see volume statistics")
+    
+    with tab5:
+        st.subheader("Real-time Threshold Preview")
+        st.info("🎯 Adjust thresholds in the sidebar to see real-time preview of segmentation")
+        
+        # Determine current segmentation method
+        segmentation_method = "russian_doll"  # Default
+        if 'segmentation_method' in locals():
+            if "Legacy" in segmentation_method:
+                method = 'legacy'
+            else:
+                method = 'russian_doll'
+        else:
+            method = 'russian_doll'
+        
+        # Show histogram with thresholds
+        st.markdown("### HU Distribution with Threshold Overlays")
+        
+        # Add option to show full volume or current slice
+        histogram_mode = st.radio(
+            "Histogram Data Source",
+            ["Current Slice", "Full Volume (Sampled)"],
+            horizontal=True
+        )
+        
+        if histogram_mode == "Current Slice":
+            hist_fig = create_histogram_with_thresholds(
+                st.session_state.ct_volume,
+                st.session_state.thresholds,
+                method=method,
+                slice_index=st.session_state.current_slice
+            )
+        else:
+            hist_fig = create_histogram_with_thresholds(
+                st.session_state.ct_volume,
+                st.session_state.thresholds,
+                method=method
+            )
+        
+        st.pyplot(hist_fig)
+        plt.close()
+        
+        # Show threshold preview on current slice
+        st.markdown("### Threshold Segmentation Preview")
+        st.caption("Preview shows how current threshold settings would segment the displayed slice")
+        
+        current_slice_data = st.session_state.ct_volume[st.session_state.current_slice]
+        preview_fig = create_threshold_preview(
+            current_slice_data,
+            st.session_state.thresholds,
+            method=method
+        )
+        
+        st.pyplot(preview_fig)
+        plt.close()
+        
+        # Show threshold values summary
+        st.markdown("### Current Threshold Settings")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**Dark Artifacts**")
+            if method == 'russian_doll':
+                st.write(f"Range: {st.session_state.thresholds['russian_doll']['dark_min']:.0f} to {st.session_state.thresholds['russian_doll']['dark_max']:.0f} HU")
+            else:
+                st.write(f"Max: {st.session_state.thresholds['legacy']['dark_max']:.0f} HU")
+        
+        with col2:
+            st.markdown("**Bright Artifacts**")
+            if method == 'russian_doll':
+                st.write(f"Range: {st.session_state.thresholds['russian_doll']['bright_min']:.0f} to {st.session_state.thresholds['russian_doll']['bright_max']:.0f} HU")
+            else:
+                st.write(f"Range: {st.session_state.thresholds['legacy']['bright_min']:.0f} to {st.session_state.thresholds['legacy']['bright_max']:.0f} HU")
+        
+        with col3:
+            st.markdown("**Metal Detection**")
+            st.write(f"Threshold: {st.session_state.thresholds['metal_detection']['metal_threshold']:.0f} HU")
+        
+        # Info about real-time updates
+        st.markdown("---")
+        st.markdown("💡 **Tip**: Adjust threshold sliders in the sidebar to see immediate changes in the preview above")
 
 else:
     # No data loaded

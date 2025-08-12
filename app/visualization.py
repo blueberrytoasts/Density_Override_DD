@@ -522,3 +522,155 @@ def visualize_edge_analysis(ct_slice, edge_features, slice_idx):
     
     plt.tight_layout()
     return fig
+
+
+def create_histogram_with_thresholds(ct_volume, thresholds, method='russian_doll', slice_index=None):
+    """
+    Create a histogram of HU values with threshold overlays for real-time preview.
+    
+    Args:
+        ct_volume: 3D numpy array of CT data in HU or 2D slice
+        thresholds: dict containing threshold values
+        method: 'russian_doll' or 'legacy' to determine which thresholds to show
+        slice_index: if provided, only use that slice; otherwise use whole volume
+        
+    Returns:
+        matplotlib figure object
+    """
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Get HU values
+    if slice_index is not None and len(ct_volume.shape) == 3:
+        hu_values = ct_volume[slice_index].flatten()
+        title = f"HU Distribution - Slice {slice_index}"
+    elif len(ct_volume.shape) == 2:
+        hu_values = ct_volume.flatten()
+        title = "HU Distribution - Current Slice"
+    else:
+        # Sample every 10th voxel for performance
+        hu_values = ct_volume[::10, ::10, ::10].flatten()
+        title = "HU Distribution - Full Volume (Sampled)"
+    
+    # Filter out air values for better visualization
+    hu_values = hu_values[hu_values > -1000]
+    
+    # Create histogram
+    counts, bins, patches = ax.hist(hu_values, bins=100, alpha=0.7, color='gray', edgecolor='none')
+    
+    # Get threshold values based on method
+    if method == 'russian_doll':
+        dark_min = thresholds['russian_doll']['dark_min']
+        dark_max = thresholds['russian_doll']['dark_max']
+        bright_min = thresholds['russian_doll']['bright_min']
+        bright_max = thresholds['russian_doll']['bright_max']
+        bone_min = thresholds['russian_doll'].get('bone_min', bright_min)
+        bone_max = thresholds['russian_doll'].get('bone_max', bright_max)
+    else:  # legacy
+        dark_min = -1024
+        dark_max = thresholds['legacy']['dark_max']
+        bright_min = thresholds['legacy']['bright_min']
+        bright_max = thresholds['legacy']['bright_max']
+        bone_min = thresholds['legacy']['bone_min']
+        bone_max = thresholds['legacy']['bone_max']
+    
+    # Add metal threshold if available
+    metal_threshold = thresholds.get('metal_detection', {}).get('metal_threshold', 2500)
+    
+    # Add vertical lines for thresholds
+    ax.axvspan(dark_min, dark_max, alpha=0.3, color='magenta', label=f'Dark Artifacts [{dark_min:.0f}, {dark_max:.0f}]')
+    ax.axvspan(bright_min, bright_max, alpha=0.3, color='yellow', label=f'Bright Artifacts [{bright_min:.0f}, {bright_max:.0f}]')
+    ax.axvspan(bone_min, bone_max, alpha=0.2, color='blue', label=f'Bone [{bone_min:.0f}, {bone_max:.0f}]')
+    ax.axvline(x=metal_threshold, color='red', linestyle='--', linewidth=2, label=f'Metal Threshold ({metal_threshold:.0f})')
+    
+    # Color histogram bars based on thresholds
+    for i, patch in enumerate(patches):
+        bin_center = (bins[i] + bins[i+1]) / 2
+        if dark_min <= bin_center <= dark_max:
+            patch.set_facecolor('magenta')
+            patch.set_alpha(0.7)
+        elif bright_min <= bin_center <= bright_max:
+            if bone_min <= bin_center <= bone_max:
+                patch.set_facecolor('blue')
+                patch.set_alpha(0.6)
+            else:
+                patch.set_facecolor('yellow')
+                patch.set_alpha(0.7)
+        elif bin_center >= metal_threshold:
+            patch.set_facecolor('red')
+            patch.set_alpha(0.8)
+    
+    ax.set_xlabel('Hounsfield Units (HU)')
+    ax.set_ylabel('Frequency')
+    ax.set_title(title)
+    ax.set_xlim(-500, 3500)
+    ax.set_yscale('log')  # Log scale for better visualization
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper right')
+    
+    plt.tight_layout()
+    return fig
+
+
+def create_threshold_preview(ct_slice, thresholds, method='russian_doll'):
+    """
+    Create a preview of how thresholds will segment the current slice.
+    
+    Args:
+        ct_slice: 2D numpy array of CT data in HU
+        thresholds: dict containing threshold values
+        method: 'russian_doll' or 'legacy'
+        
+    Returns:
+        matplotlib figure object showing segmentation preview
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    # Get threshold values
+    if method == 'russian_doll':
+        dark_min = thresholds['russian_doll']['dark_min']
+        dark_max = thresholds['russian_doll']['dark_max']
+        bright_min = thresholds['russian_doll']['bright_min']
+        bright_max = thresholds['russian_doll']['bright_max']
+    else:
+        dark_min = -1024
+        dark_max = thresholds['legacy']['dark_max']
+        bright_min = thresholds['legacy']['bright_min']
+        bright_max = thresholds['legacy']['bright_max']
+    
+    metal_threshold = thresholds.get('metal_detection', {}).get('metal_threshold', 2500)
+    
+    # Original slice
+    axes[0].imshow(ct_slice, cmap='gray', vmin=-150, vmax=250)
+    axes[0].set_title('Original CT Slice')
+    axes[0].axis('off')
+    
+    # Threshold preview
+    preview = np.zeros((*ct_slice.shape, 3))
+    
+    # Apply thresholds
+    dark_mask = (ct_slice >= dark_min) & (ct_slice <= dark_max)
+    bright_mask = (ct_slice >= bright_min) & (ct_slice <= bright_max)
+    metal_mask = ct_slice >= metal_threshold
+    
+    # Color the regions
+    preview[dark_mask] = [1.0, 0.0, 1.0]  # Magenta for dark
+    preview[bright_mask] = [1.0, 1.0, 0.0]  # Yellow for bright
+    preview[metal_mask] = [1.0, 0.0, 0.0]  # Red for metal
+    
+    axes[1].imshow(preview)
+    axes[1].set_title('Threshold Preview')
+    axes[1].axis('off')
+    
+    # Overlay on original
+    axes[2].imshow(ct_slice, cmap='gray', vmin=-150, vmax=250)
+    overlay = np.zeros((*ct_slice.shape, 4))
+    overlay[dark_mask] = [1.0, 0.0, 1.0, 0.5]
+    overlay[bright_mask] = [1.0, 1.0, 0.0, 0.5]
+    overlay[metal_mask] = [1.0, 0.0, 0.0, 0.7]
+    axes[2].imshow(overlay)
+    axes[2].set_title('Overlay on Original')
+    axes[2].axis('off')
+    
+    plt.suptitle('Real-time Threshold Preview')
+    plt.tight_layout()
+    return fig
