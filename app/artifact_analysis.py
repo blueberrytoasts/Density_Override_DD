@@ -81,14 +81,60 @@ def find_bright_artifact_range_automatically(current_slice, metal_mask, roi_boun
         print("Warning: Not enough bright pixel samples found to determine range automatically.")
         return None
 
-    min_hu = np.percentile(potential_bright_values, 25)
-    max_hu = np.percentile(potential_bright_values, 90)
+    min_hu = np.min(potential_bright_values)
+    max_hu = np.percentile(potential_bright_values, 75)
 
     if min_hu >= max_hu or min_hu > 3000:
         return None
 
     return [(int(min_hu), int(max_hu))]
 
+def find_bone_range_automatically(ct_slice, metal_mask, dark_artifact_mask, bright_artifact_mask, roi_boundaries):
+    """
+    Automatically determines the HU range for bone by analyzing the histogram
+    of non-artifact, non-metal regions within the ROI.
+    """
+    # Create a mask of non-metal, non-artifact regions within the ROI
+    roi_mask = np.zeros_like(ct_slice, dtype=bool)
+    r_min_roi, r_max_roi, c_min_roi, c_max_roi = roi_boundaries
+    roi_mask[r_min_roi:r_max_roi, c_min_roi:c_max_roi] = True
+
+    non_artifact_mask = roi_mask & ~metal_mask & ~dark_artifact_mask & ~bright_artifact_mask
+
+    potential_bone_values = ct_slice[non_artifact_mask]
+
+    if potential_bone_values.size < 100: # Need a reasonable number of samples
+        print("Warning: Not enough non-artifact pixels to determine bone range automatically. Using default.")
+        return None
+
+    # Analyze histogram to find bone peak
+    hist, bin_edges = np.histogram(potential_bone_values, bins=np.arange(-1024, 3000, 10))
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    # Look for a peak in the typical bone range (e.g., 150-1500 HU)
+    bone_search_min = 150
+    bone_search_max = 1500
+    search_indices = np.where((bin_centers >= bone_search_min) & (bin_centers <= bone_search_max))
+
+    if len(search_indices[0]) == 0:
+        print("Warning: No significant bone-like HU values found in histogram. Using default.")
+        return None
+
+    # Find the peak within the bone search range
+    peak_index = search_indices[0][np.argmax(hist[search_indices])]
+    peak_hu = bin_centers[peak_index]
+
+    # Define range around the peak
+    # This is a heuristic and can be refined
+    min_hu = max(bone_search_min, int(peak_hu - 150)) # Lower bound, not going below search min
+    max_hu = min(bone_search_max, int(peak_hu + 300)) # Upper bound, not going above search max
+
+    # Ensure min_hu is less than max_hu
+    if min_hu >= max_hu:
+        min_hu = bone_search_min
+        max_hu = bone_search_max
+
+    return (min_hu, max_hu)
 
 def segment_artifacts_and_tissues(ct_slice, metal_mask, roi_boundaries, 
                                   dark_artifact_range=None, bright_artifact_ranges=None,
@@ -110,7 +156,7 @@ def segment_artifacts_and_tissues(ct_slice, metal_mask, roi_boundaries,
     r_min_roi = max(0, r_min_metal - artifact_margin)
     r_max_roi = min(rows, r_max_metal + artifact_margin)
     c_min_roi = max(0, c_min_metal - artifact_margin)
-    c_max_roi = min(cols, c_max_metal + artifact_margin)
+    c_max_roi = min(cols, c_max_metal - artifact_margin)
     
     roi_boundaries = (r_min_roi, r_max_roi, c_min_roi, c_max_roi)
     
