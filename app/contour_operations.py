@@ -1,10 +1,102 @@
 import numpy as np
 import nibabel as nib
 from scipy.ndimage import binary_erosion, binary_dilation, binary_fill_holes, generate_binary_structure
-from artifact_discrimination import create_sequential_masks
-from artifact_discrimination_fast import create_fast_russian_doll_segmentation
-from artifact_discrimination_enhanced import create_enhanced_russian_doll_segmentation
-from artifact_discrimination_refinement import refine_bone_artifact_discrimination
+from core.discrimination import ArtifactDiscriminator, DiscriminationMethod
+from body_mask import create_body_mask, constrain_to_body
+
+
+# Wrapper functions for backward compatibility
+def create_sequential_masks(ct_volume, metal_mask, spacing, **kwargs):
+    """Legacy wrapper for discrimination."""
+    discriminator = ArtifactDiscriminator(DiscriminationMethod.DISTANCE_BASED)
+    
+    # Get threshold ranges
+    bright_range = kwargs.get('bright_range', [800, 2000])
+    bone_range = kwargs.get('bone_range', [300, 1500])
+    dark_range = kwargs.get('dark_range', [-1024, -150])
+    
+    # Create body mask to exclude air outside patient
+    body_mask = create_body_mask(ct_volume, air_threshold=-300)
+    print(f"Debug - Body mask voxels: {np.sum(body_mask)}")
+    
+    # Create combined bright mask (includes both bone and bright artifact ranges for discrimination)
+    bright_mask = ((ct_volume >= bright_range[0]) & (ct_volume <= bright_range[1])) | \
+                  ((ct_volume >= bone_range[0]) & (ct_volume <= bone_range[1]))
+    bright_mask = bright_mask & (~metal_mask) & body_mask  # Exclude metal and constrain to body
+    
+    print(f"Debug - Bright mask voxels before discrimination: {np.sum(bright_mask)}")
+    print(f"Debug - Bright range: {bright_range}, Bone range: {bone_range}")
+    
+    # Discriminate bone from artifacts
+    result = discriminator.discriminate(ct_volume, metal_mask, bright_mask, spacing)
+    
+    print(f"Debug - After discrimination - Bone: {np.sum(result['bone_mask'])}, Artifacts: {np.sum(result['artifact_mask'])}")
+    
+    # Create dark mask - constrained to body to avoid air outside patient
+    dark_mask = (ct_volume >= dark_range[0]) & (ct_volume <= dark_range[1]) & (~metal_mask) & body_mask
+    print(f"Debug - Dark mask voxels: {np.sum(dark_mask)}, Dark range: {dark_range}")
+    
+    return {
+        'metal': metal_mask,
+        'dark_artifacts': dark_mask,
+        'bone': result['bone_mask'],
+        'bright_artifacts': result['artifact_mask']
+    }
+
+
+def create_fast_russian_doll_segmentation(ct_volume, metal_mask, spacing, **kwargs):
+    """Fast Russian doll segmentation using distance-based discrimination."""
+    return create_sequential_masks(ct_volume, metal_mask, spacing, **kwargs)
+
+
+def create_enhanced_russian_doll_segmentation(ct_volume, metal_mask, spacing, **kwargs):
+    """Enhanced Russian doll segmentation using edge-based discrimination."""
+    discriminator = ArtifactDiscriminator(DiscriminationMethod.EDGE_BASED)
+    
+    # Get threshold ranges
+    bright_range = kwargs.get('bright_range', [800, 2000])
+    bone_range = kwargs.get('bone_range', [300, 1500])
+    dark_range = kwargs.get('dark_range', [-1024, -150])
+    
+    # Create body mask to exclude air outside patient
+    body_mask = create_body_mask(ct_volume, air_threshold=-300)
+    
+    # Create combined bright mask (includes both bone and bright artifact ranges for discrimination)
+    bright_mask = ((ct_volume >= bright_range[0]) & (ct_volume <= bright_range[1])) | \
+                  ((ct_volume >= bone_range[0]) & (ct_volume <= bone_range[1]))
+    bright_mask = bright_mask & (~metal_mask) & body_mask  # Exclude metal and constrain to body
+    
+    # Discriminate bone from artifacts
+    result = discriminator.discriminate(ct_volume, metal_mask, bright_mask, spacing)
+    
+    # Create dark mask - constrained to body to avoid air outside patient
+    dark_mask = (ct_volume >= dark_range[0]) & (ct_volume <= dark_range[1]) & (~metal_mask) & body_mask
+    
+    return {
+        'metal': metal_mask,
+        'dark_artifacts': dark_mask,
+        'bone': result['bone_mask'],
+        'bright_artifacts': result['artifact_mask']
+    }
+
+
+def refine_bone_artifact_discrimination(bone_mask, artifact_mask, ct_volume, spacing, **kwargs):
+    """Refine bone/artifact discrimination using morphological operations."""
+    # Apply morphological operations
+    struct = generate_binary_structure(3, 1)
+    bone_refined = binary_fill_holes(bone_mask)
+    bone_refined = binary_erosion(bone_refined, struct, iterations=1)
+    bone_refined = binary_dilation(bone_refined, struct, iterations=1)
+    
+    artifact_refined = binary_fill_holes(artifact_mask)
+    artifact_refined = binary_erosion(artifact_refined, struct, iterations=1)
+    artifact_refined = binary_dilation(artifact_refined, struct, iterations=1)
+    
+    return {
+        'bone_mask': bone_refined,
+        'artifact_mask': artifact_refined,
+        'success': True
+    }
 
 
 def boolean_subtract(mask1, mask2):
@@ -218,7 +310,9 @@ def create_bone_mask(ct_volume, metal_mask, bright_mask, dark_mask, roi_bounds,
 
 def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=None,
                                    dark_threshold_high=-150,
+                                   dark_threshold_low=-1024,  # Add parameter for lower bound
                                    bone_threshold_low=300, bone_threshold_high=1500,
+                                   bright_threshold_low=None, bright_threshold_high=None,
                                    bright_artifact_max_distance_cm=10.0,
                                    use_fast_mode=True,
                                    use_enhanced_mode=False,
@@ -234,8 +328,10 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         spacing: Voxel spacing (z, y, x) in mm
         roi_bounds: Optional ROI bounds to constrain analysis
         dark_threshold_high: Upper threshold for dark artifacts
-        bone_threshold_low: Lower threshold for bone/bright artifacts
-        bone_threshold_high: Upper threshold for bone/bright artifacts
+        bone_threshold_low: Lower threshold for bone tissue
+        bone_threshold_high: Upper threshold for bone tissue
+        bright_threshold_low: Lower threshold for bright artifacts (optional, defaults to bone_threshold_low)
+        bright_threshold_high: Upper threshold for bright artifacts (optional, defaults to higher value)
         bright_artifact_max_distance_cm: Max distance from metal for artifacts
         use_fast_mode: Use fast discrimination (distance-based) instead of profile analysis
         use_enhanced_mode: Use enhanced edge-based discrimination
@@ -246,17 +342,33 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
     Returns:
         dict: All segmentation masks including discrimination results
     """
+    # Set bright thresholds if not provided (backward compatibility)
+    if bright_threshold_low is None:
+        bright_threshold_low = bone_threshold_low
+    if bright_threshold_high is None:
+        bright_threshold_high = max(bone_threshold_high, 2000)  # Bright artifacts can go higher than bone
     # Choose discrimination method
     if use_advanced_mode:
         # Use new advanced texture/gradient-based discrimination
-        from artifact_discrimination_advanced import classify_bone_vs_artifact
+        # Use texture-based discrimination from consolidated module
+        discriminator = ArtifactDiscriminator(DiscriminationMethod.TEXTURE_BASED)
         
-        # First segment dark artifacts (excluding metal)
-        dark_mask = (ct_volume >= -1024) & (ct_volume <= dark_threshold_high)
-        dark_mask = boolean_subtract(dark_mask, metal_mask)
+        def classify_bone_vs_artifact(ct_volume, bright_mask, metal_mask=None, use_ml=False):
+            result = discriminator.discriminate(ct_volume, metal_mask, bright_mask, spacing)
+            confidence_map = result.get('confidence_map', np.ones_like(bright_mask, dtype=float))
+            return result['bone_mask'], result['artifact_mask'], confidence_map
         
-        # Get bright regions that need discrimination
-        bright_mask = (ct_volume >= bone_threshold_low) & (ct_volume <= bone_threshold_high)
+        # Create body mask to exclude air outside patient
+        body_mask = create_body_mask(ct_volume, air_threshold=-400)
+        
+        # First segment dark artifacts (excluding metal and constrained to body)
+        dark_mask = (ct_volume >= dark_threshold_low) & (ct_volume <= dark_threshold_high)
+        dark_mask = boolean_subtract(dark_mask, metal_mask) & body_mask
+        
+        # Get combined bright regions that need discrimination (union of bright artifact and bone ranges)
+        bright_artifact_mask = (ct_volume >= bright_threshold_low) & (ct_volume <= bright_threshold_high)
+        bone_range_mask = (ct_volume >= bone_threshold_low) & (ct_volume <= bone_threshold_high)
+        bright_mask = (bright_artifact_mask | bone_range_mask) & body_mask  # Union of both ranges, constrained to body
         bright_mask = boolean_subtract(bright_mask, metal_mask)
         bright_mask = boolean_subtract(bright_mask, dark_mask)
         
@@ -279,8 +391,9 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             ct_volume,
             metal_mask,
             spacing,
-            dark_range=(-1024, dark_threshold_high),
+            dark_range=(dark_threshold_low, dark_threshold_high),
             bone_range=(bone_threshold_low, bone_threshold_high),
+            bright_range=(bright_threshold_low, bright_threshold_high),
             max_distance_cm=bright_artifact_max_distance_cm,
             progress_callback=progress_callback
         )
@@ -289,8 +402,9 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             ct_volume,
             metal_mask,
             spacing,
-            dark_range=(-1024, dark_threshold_high),
+            dark_range=(dark_threshold_low, dark_threshold_high),
             bone_range=(bone_threshold_low, bone_threshold_high),
+            bright_range=(bright_threshold_low, bright_threshold_high),
             max_distance_cm=bright_artifact_max_distance_cm
         )
     else:
@@ -298,8 +412,9 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             ct_volume, 
             metal_mask, 
             spacing,
-            dark_range=(-1024, dark_threshold_high),
+            dark_range=(dark_threshold_low, dark_threshold_high),
             bone_range=(bone_threshold_low, bone_threshold_high),
+            bright_range=(bright_threshold_low, bright_threshold_high),
             bright_artifact_max_distance_cm=bright_artifact_max_distance_cm
         )
     
@@ -320,14 +435,14 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
     if use_refinement and 'bone' in segmentation_result and 'bright_artifacts' in segmentation_result:
         print("\nApplying second-pass refinement...")
         refinement_result = refine_bone_artifact_discrimination(
-            ct_volume, 
-            segmentation_result,
-            metal_mask,
+            segmentation_result['bone'],
+            segmentation_result['bright_artifacts'],
+            ct_volume,
             spacing
         )
         # Update the masks
-        segmentation_result['bone'] = refinement_result['bone']
-        segmentation_result['bright_artifacts'] = refinement_result['bright_artifacts']
+        segmentation_result['bone'] = refinement_result['bone_mask']
+        segmentation_result['bright_artifacts'] = refinement_result['artifact_mask']
     
     # Store originals in case refinement fails
     originals = {}

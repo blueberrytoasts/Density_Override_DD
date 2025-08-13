@@ -121,6 +121,27 @@ class ThresholdConfig:
         help_text="Legacy method dark artifact maximum threshold"
     )
     
+    # Russian Doll thresholds - separate for bright artifacts and bone
+    RUSSIAN_DOLL_BRIGHT_ARTIFACTS = ThresholdRange(
+        min_bound=500,
+        max_bound=3000,
+        default_min=800,
+        default_max=2000,
+        step=50.0,
+        label="Bright Artifacts HU Range",
+        help_text="HU range for bright metal artifacts (dynamically adjusted based on metal detection)"
+    )
+    
+    RUSSIAN_DOLL_BONE = ThresholdRange(
+        min_bound=150,
+        max_bound=1500,
+        default_min=300,
+        default_max=1200,
+        step=50.0,
+        label="Bone Tissue HU Range",
+        help_text="HU range for bone tissue (cortical and cancellous bone)"
+    )
+    
     # Analysis parameters
     MAX_ARTIFACT_DISTANCE = SingleThreshold(
         min_bound=1.0,
