@@ -521,6 +521,7 @@ def visualize_edge_analysis(ct_slice, edge_features, slice_idx):
     ax.axis('off')
     
     plt.tight_layout()
+<<<<<<< HEAD
     return fig
 
 
@@ -673,4 +674,6 @@ def create_threshold_preview(ct_slice, thresholds, method='russian_doll'):
     
     plt.suptitle('Real-time Threshold Preview')
     plt.tight_layout()
+=======
+>>>>>>> main
     return fig
