@@ -1,1 +1,0 @@
-"""Core algorithms for metal artifact characterization."""
