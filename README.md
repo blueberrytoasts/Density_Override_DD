@@ -80,14 +80,14 @@ pip install nibabel>=4.0.0 plotly>=5.15.0
 
 ## Usage
 
-### \ud83d\ude80 Quick Start
+### 🚀 Quick Start
 ```bash
 # Production deployment
 ./run.sh
 ```
 Application will be available at `http://192.168.1.11:4224`
 
-### \ud83d\udd27 Development Mode
+### 🔧 Development Mode
 ```bash
 # Local development (default: localhost:8501)
 cd app
@@ -97,7 +97,7 @@ streamlit run main.py
 streamlit run main.py --server.address localhost --server.port 8501
 ```
 
-### \ud83c\udfe5 Medical Network Deployment
+### 🏥 Medical Network Deployment
 ```bash
 # For medical network deployment
 ./run_medical.sh
@@ -135,23 +135,23 @@ streamlit run main.py --server.address localhost --server.port 8501
 └── README.md               # This file
 ```
 
-## \ud83d\udcca Workflow
+## 📊 Workflow
 
-### 1. \ud83d\udcc2 Load Patient Data
+### 1. 📂 Load Patient Data
 1. Select patient from sidebar dropdown
 2. Click **"Load Patient Data"** button
 3. System automatically loads all DICOM slices and converts to Hounsfield Units
 4. Displays basic volume information and slice count
 
-### 2. \ud83c\udfaf Automatic Metal Detection
+### 2. 🎯 Automatic Metal Detection
 1. Choose detection method in sidebar:
-   - **\u2705 3D Adaptive + Star Algorithm** (Recommended)
+   - **✅ 3D Adaptive + Star Algorithm** (Recommended)
    - Legacy with Manual Threshold
 2. Configure parameters (optional):
    - Search margin: 1.0-5.0 cm
    - FW percentage: 50-90%
    - Intensity percentile: 99.0-99.9%
-3. Click **"\ud83c\udfaf Detect Metal Automatically"**
+3. Click **"🎯 Detect Metal Automatically"**
 4. Algorithm automatically:
    - Analyzes axial, coronal, and sagittal planes
    - Identifies metal components >2500 HU
@@ -159,12 +159,12 @@ streamlit run main.py --server.address localhost --server.port 8501
    - Performs 16-point star profile analysis
    - Applies FW75% adaptive thresholding
 
-### 3. \ud83d\udd0d Artifact Segmentation  
+### 3. 🔍 Artifact Segmentation  
 1. Select segmentation approach:
-   - **\u2705 Russian Doll with Smart Discrimination** (Recommended)
+   - **✅ Russian Doll with Smart Discrimination** (Recommended)
    - Legacy Threshold-Based
 2. Configure artifact detection distance (2-15 cm from metal)
-3. Click **"\ud83d\udd0d Segment All Artifacts"**
+3. Click **"🔍 Segment All Artifacts"**
 4. Russian Doll process:
    - Segments dark artifacts (<-150 HU) excluding metal
    - Analyzes bone/artifact candidates (300-1500 HU)  
@@ -172,19 +172,19 @@ streamlit run main.py --server.address localhost --server.port 8501
    - Ensures mutual tissue exclusion
    - Applies morphological refinement
 
-### 4. \ud83d\udcca Analysis & Visualization
+### 4. 📊 Analysis & Visualization
 Navigate through multiple analysis tabs:
 - **Single Slice Analysis**: Interactive slice viewer with overlays
 - **Multi-Slice View**: Grid display with ROI indicators  
 - **Metal Detection Details**: Star profile visualizations
 - **Volume Statistics**: Quantitative metrics and confidence scores
 
-### 5. \ud83d\udcbe Export Results
+### 5. 💾 Export Results
 - **NIFTI Format**: Individual masks or multi-label volumes for ML
 - **DICOM RT Structures**: Clinical-compatible format with custom naming
 - **Confidence Maps**: Discrimination confidence for quality assessment
 
-## \ud83e\udde0 Algorithm Details
+## 🧠 Algorithm Details
 
 ### FW75% Maximum Thresholding
 The Full Width at 75% Maximum method:
@@ -216,7 +216,7 @@ Sequential tissue segmentation with mutual exclusion:
 - **Extent calculation**: Full 3D bounding box from all projections
 - **Focused processing**: Only analyzes slices with confirmed metal
 
-## \u2699\ufe0f Configuration
+## ⚙️ Configuration
 
 ### Metal Detection Parameters
 - **3D Search Margin**: 1.0-5.0 cm (default: 2.0 cm)
