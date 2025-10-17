@@ -328,7 +328,7 @@ class MetalDetector:
             # Implement intelligent Z-bounds using 50% peak metal HU cutoff
             # Find peak metal HU value and 50% threshold (balanced)
             peak_metal_hu = np.max(ct_volume[refined_mask])
-            cutoff_hu = peak_metal_hu * 0.50  # Balanced threshold to include more metal slices
+            cutoff_hu = peak_metal_hu * 0.75  # Balanced threshold to include more metal slices
             
             # Find slices that contain substantial metal (above 50% of peak)
             valid_z_slices = []
