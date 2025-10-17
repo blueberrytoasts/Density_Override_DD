@@ -1,8 +1,13 @@
 # CT Metal Artifact Characterization
 
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
+[![Streamlit](https://img.shields.io/badge/streamlit-1.29.0-FF4B4B.svg)](https://streamlit.io)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Medical Imaging](https://img.shields.io/badge/domain-medical--imaging-brightgreen.svg)](#)
+
 An advanced Streamlit web application for automatic detection and characterization of metal artifacts in CT scans of patients with hip implants, designed for building machine learning datasets.
 
-## Key Features
+## ✨ Key Features
 
 ### 🎯 Automatic Metal Detection
 - **3D Adaptive Detection**: Multi-planar analysis across axial, coronal, and sagittal views
@@ -38,7 +43,7 @@ An advanced Streamlit web application for automatic detection and characterizati
 - **Confidence maps** for discrimination results
 - **Automatic affine matrix generation** from DICOM metadata
 
-## Installation
+## 🛠️ Installation
 
 ### Using Conda (Recommended)
 ```bash
@@ -49,29 +54,53 @@ conda env create -f environment.yml
 conda activate IVH
 ```
 
+**Note**: The environment name is `IVH` as specified in `environment.yml`.
+
 ### Using pip
 ```bash
+# Install required dependencies
 pip install -r requirements.txt
+
+# Additional dependencies for full functionality
+pip install nibabel>=4.0.0 plotly>=5.15.0
 ```
+
+### Dependencies Overview
+**Core Libraries:**
+- `streamlit` - Web application framework
+- `numpy` - Array operations and numerical computing
+- `matplotlib` - Visualization and plotting
+- `pydicom` - DICOM file handling
+- `scipy` - Scientific computing and image processing
+- `scikit-image` - Advanced image processing
+- `nibabel` - NIFTI file I/O for ML pipelines
+- `pandas` - Data manipulation
+- `plotly` - Interactive plotting
+- `Pillow` - Image processing support
 
 ## Usage
 
-### Quick Start
+### 🚀 Quick Start
 ```bash
+# Production deployment
 ./run.sh
 ```
-The application will be available at `http://192.168.1.11:4224`
+Application will be available at `http://192.168.1.11:4224`
 
-### Manual Start
+### 🔧 Development Mode
 ```bash
-cd app
-streamlit run main.py --server.address 192.168.1.11 --server.port 4224
-```
-
-### Local Development
-```bash
+# Local development (default: localhost:8501)
 cd app
 streamlit run main.py
+
+# Custom address/port
+streamlit run main.py --server.address localhost --server.port 8501
+```
+
+### 🏥 Medical Network Deployment
+```bash
+# For medical network deployment
+./run_medical.sh
 ```
 
 ## Project Structure
@@ -81,65 +110,81 @@ streamlit run main.py
 │   ├── main.py              # Streamlit web application
 │   ├── dicom_utils.py       # DICOM loading and metadata handling
 │   ├── dicom_export.py      # DICOM RT Structure Set creation
-│   ├── metal_detection.py   # Legacy metal detection algorithms
-│   ├── metal_detection_v3.py # 3D adaptive metal detection
 │   ├── contour_operations.py # Boolean operations and Russian doll segmentation
-│   ├── artifact_discrimination.py # Star profile-based bone/artifact discrimination
-│   └── visualization.py     # Advanced plotting and visualization
+│   ├── visualization.py     # Advanced plotting and visualization
+│   ├── config.py            # Configuration management
+│   ├── body_mask.py         # Body masking utilities
+│   ├── cornerstone_viewer.py # Medical image viewer integration
+│   └── core/                # Core algorithms
+│       ├── metal_detection.py # Metal detection algorithms
+│       └── discrimination.py  # Artifact discrimination
 ├── data/                    # Patient DICOM data
-│   ├── HIP* Patient/       # Patient datasets
+│   └── [Patient directories] # Individual patient datasets
 ├── output/                  # Exported masks and RT structures
-├── misc/                    # Test outputs and screenshots
+├── tests/                   # Test suite
+│   ├── test_*.py           # Individual test modules
+│   └── test_output/        # Test output directory
 ├── archive/                 # Original Jupyter notebooks
+├── .streamlit/             # Streamlit configuration
 ├── requirements.txt         # Python dependencies
+├── environment.yml          # Conda environment file
 ├── run.sh                  # Launch script
+├── run_medical.sh          # Medical deployment script
+├── verify_config.py        # Configuration verification
 ├── CLAUDE.md               # AI assistant guidance
 └── README.md               # This file
 ```
 
-## Workflow
+## 📊 Workflow
 
-### 1. Load Patient Data
-- Select patient from sidebar
-- Click "Load Patient Data"
-- System loads all DICOM slices and metadata
+### 1. 📂 Load Patient Data
+1. Select patient from sidebar dropdown
+2. Click **"Load Patient Data"** button
+3. System automatically loads all DICOM slices and converts to Hounsfield Units
+4. Displays basic volume information and slice count
 
-### 2. Automatic Metal Detection
-- Select detection method:
-  - **3D Adaptive + Star Algorithm** (Recommended)
-  - Legacy with Initial Threshold
-- Click "🎯 Detect Metal Automatically"
-- 3D Adaptive Algorithm:
-  1. Analyzes all three anatomical planes
-  2. Finds metal components above 2500 HU
-  3. Creates individual ROIs per component
-  4. Performs 16-point star profile analysis
-  5. Applies FW75% thresholding (no initial HU needed)
-  6. Generates per-slice adaptive thresholds
+### 2. 🎯 Automatic Metal Detection
+1. Choose detection method in sidebar:
+   - **✅ 3D Adaptive + Star Algorithm** (Recommended)
+   - Legacy with Manual Threshold
+2. Configure parameters (optional):
+   - Search margin: 1.0-5.0 cm
+   - FW percentage: 50-90%
+   - Intensity percentile: 99.0-99.9%
+3. Click **"🎯 Detect Metal Automatically"**
+4. Algorithm automatically:
+   - Analyzes axial, coronal, and sagittal planes
+   - Identifies metal components >2500 HU
+   - Creates individual ROIs per component
+   - Performs 16-point star profile analysis
+   - Applies FW75% adaptive thresholding
 
-### 3. Artifact Segmentation
-- Select segmentation method:
-  - **Russian Doll with Smart Discrimination** (Recommended)
-  - Legacy Threshold-Based
-- Click "🔍 Segment All Artifacts"
-- Russian Doll Process:
-  1. Segments dark artifacts (< -150 HU)
-  2. Analyzes bone/bright artifact candidates (300-1500 HU)
-  3. Uses star profiles to discriminate bone from artifacts:
-     - Measures peak width, smoothness, directional variance
-     - Assigns confidence scores to each voxel
-  4. Ensures mutual exclusion between all tissue types
-  5. Applies morphological refinement
+### 3. 🔍 Artifact Segmentation  
+1. Select segmentation approach:
+   - **✅ Russian Doll with Smart Discrimination** (Recommended)
+   - Legacy Threshold-Based
+2. Configure artifact detection distance (2-15 cm from metal)
+3. Click **"🔍 Segment All Artifacts"**
+4. Russian Doll process:
+   - Segments dark artifacts (<-150 HU) excluding metal
+   - Analyzes bone/artifact candidates (300-1500 HU)  
+   - Uses star profile discrimination (peak width, smoothness)
+   - Ensures mutual tissue exclusion
+   - Applies morphological refinement
 
-### 4. Analysis & Export
-- View results in multiple tabs:
-  - Single Slice Analysis
-  - Multi-Slice View
-  - Metal Detection Details
-  - Volume Statistics
-- Export as NIFTI files for ML pipelines
+### 4. 📊 Analysis & Visualization
+Navigate through multiple analysis tabs:
+- **Single Slice Analysis**: Interactive slice viewer with overlays
+- **Multi-Slice View**: Grid display with ROI indicators  
+- **Metal Detection Details**: Star profile visualizations
+- **Volume Statistics**: Quantitative metrics and confidence scores
 
-## Algorithm Details
+### 5. 💾 Export Results
+- **NIFTI Format**: Individual masks or multi-label volumes for ML
+- **DICOM RT Structures**: Clinical-compatible format with custom naming
+- **Confidence Maps**: Discrimination confidence for quality assessment
+
+## 🧠 Algorithm Details
 
 ### FW75% Maximum Thresholding
 The Full Width at 75% Maximum method:
@@ -171,7 +216,7 @@ Sequential tissue segmentation with mutual exclusion:
 - **Extent calculation**: Full 3D bounding box from all projections
 - **Focused processing**: Only analyzes slices with confirmed metal
 
-## Configuration
+## ⚙️ Configuration
 
 ### Metal Detection Parameters
 - **3D Search Margin**: 1.0-5.0 cm (default: 2.0 cm)
@@ -188,34 +233,66 @@ Sequential tissue segmentation with mutual exclusion:
 - **Bright Artifacts**: 800-3000 HU
 - **Bone**: 150-1500 HU
 
-## Requirements
+## 🧪 Testing
+
+The project includes a comprehensive test suite to validate functionality:
+
+```bash
+# Run all tests
+python tests/final_test_all_patients.py
+
+# Test specific features
+python tests/test_3d_adaptive.py      # 3D adaptive metal detection
+python tests/test_russian_doll.py     # Russian doll segmentation
+python tests/test_segmentation.py     # General segmentation
+python tests/test_app.py             # Application functionality
+```
+
+## 💻 Requirements
 
 ### Minimum Requirements
 - Python 3.8+
 - 8GB RAM
 - Modern web browser
-- DICOM CT series
+- DICOM CT series with metal implants
 
 ### Recommended
-- Python 3.12+
+- Python 3.12+ (as specified in environment.yml)
 - 16GB RAM
-- NVIDIA GPU with CUDA (for acceleration)
+- NVIDIA GPU with CUDA (for optional acceleration)
 - CuPy for GPU processing (optional)
 
-## Recent Enhancements
+## Development Status
 
-- ✅ Bilateral implant support (via individual ROIs)
-- ✅ DICOM RT Structure export
-- ✅ Smart bone/artifact discrimination
-- ✅ GPU acceleration support
-- ✅ Confidence mapping
-- ✅ Custom contour naming
+### ✅ Implemented Features
+- Bilateral implant support (individual ROIs)
+- DICOM RT Structure export
+- Smart bone/artifact discrimination using star profiles
+- GPU acceleration support (optional CuPy)
+- Confidence mapping for discrimination results
+- Custom contour naming for exports
+- 3D adaptive metal detection with FW75% thresholding
+- Russian doll segmentation with mutual exclusion
+- Multi-format export (NIFTI, DICOM RT)
 
-## Future Enhancements
-
+### 🚧 Future Enhancements
 - Batch processing for multiple patients
 - Machine learning model integration
-- 3D visualization
-- Automated quality metrics
-- Cloud deployment
-- API endpoints for integration
+- 3D visualization capabilities
+- Automated quality assessment metrics
+- Cloud deployment options
+- REST API endpoints for integration
+
+---
+
+## Contributing
+
+This is a medical imaging research project. When contributing:
+1. Follow existing code patterns and documentation standards
+2. Test changes with multiple patient datasets
+3. Ensure DICOM compliance for clinical compatibility
+4. Validate HU ranges and spatial accuracy
+
+## License
+
+This project is intended for research and educational purposes in medical imaging.
