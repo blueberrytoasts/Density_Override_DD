@@ -304,34 +304,25 @@ class MetalDetector:
         x_extent = np.max(x_coords) - np.min(x_coords)
         
         # Simplified processing - use global threshold instead of per-slice for speed
-        # Calculate two thresholds: one for metal segmentation, one for ROI bounds
+        # Calculate a single robust threshold based on the high-intensity regions
         metal_region = ct_volume[initial_mask]
         if len(metal_region) > 0:
-            # Low percentile for complete metal capture (including edges)
-            metal_threshold = np.percentile(metal_region, 5)  # 5th percentile captures metal edges
-            metal_threshold = max(metal_threshold, 1800)  # Minimum threshold for metal
-            refined_mask = ct_volume > metal_threshold
-
-            # High percentile for tight ROI bounds (metal core only)
-            roi_threshold = np.percentile(metal_region, 75)  # 75th percentile for ROI sizing
-            roi_threshold = max(roi_threshold, 2000)  # Minimum threshold for ROI
-            roi_mask_for_bounds = ct_volume > roi_threshold
-
-            slice_thresholds = [metal_threshold]  # Single threshold for all slices
+            # Use a more conservative threshold to focus on true metal
+            robust_threshold = np.percentile(metal_region, 50)  # Reverted to 50th percentile (median)
+            # Ensure the refined threshold is not too low
+            robust_threshold = max(robust_threshold, 1800)  # Minimum threshold for metal
+            refined_mask = ct_volume > robust_threshold
+            slice_thresholds = [robust_threshold]  # Single threshold for all slices
         else:
             refined_mask = initial_mask
-            roi_mask_for_bounds = initial_mask
             slice_thresholds = [initial_threshold]
 
         # Create individual ROIs for components
         labeled, num_components = label(refined_mask)
         individual_regions = {}
 
-        # Get coordinates of the refined mask for metal segmentation
+        # Get coordinates of the refined mask for overall ROI
         z_coords, y_coords, x_coords = np.where(refined_mask)
-
-        # Get coordinates from ROI mask for tight ROI bounds
-        z_coords_roi, y_coords_roi, x_coords_roi = np.where(roi_mask_for_bounds)
         
         if len(z_coords) > 0:
             # Implement intelligent Z-bounds using 50% peak metal HU cutoff
@@ -426,10 +417,10 @@ class MetalDetector:
                 if z in individual_regions and len(individual_regions[z]) > 1:
                     individual_regions[z] = self._merge_overlapping_boxes(individual_regions[z])
         
-        # Create Conservative ROI - calculate bounds from ROI mask (75th percentile, tighter)
-        if len(z_coords_roi) > 0:
-            # Use the roi_mask_for_bounds to create a tighter ROI based on metal core
-            # This prevents ROI bloat while still containing artifacts via margin
+        # Create Conservative ROI - calculate bounds from ALL metal voxels across all slices
+        if len(z_coords) > 0:
+            # Use the overall refined_mask to create a truly conservative ROI
+            # This ensures ALL metal and potential artifacts are contained
 
             # Add extra margin for artifacts that extend beyond metal
             conservative_margin_voxels = margin_voxels + 5  # Extra margin for artifacts
@@ -437,10 +428,10 @@ class MetalDetector:
             roi_bounds = {
                 'z_min': z_min_intelligent,
                 'z_max': z_max_intelligent,
-                'y_min': max(0, int(np.min(y_coords_roi)) - conservative_margin_voxels),
-                'y_max': min(ct_volume.shape[1], int(np.max(y_coords_roi)) + conservative_margin_voxels + 1),
-                'x_min': max(0, int(np.min(x_coords_roi)) - conservative_margin_voxels),
-                'x_max': min(ct_volume.shape[2], int(np.max(x_coords_roi)) + conservative_margin_voxels + 1)
+                'y_min': max(0, int(np.min(y_coords)) - conservative_margin_voxels),
+                'y_max': min(ct_volume.shape[1], int(np.max(y_coords)) + conservative_margin_voxels + 1),
+                'x_min': max(0, int(np.min(x_coords)) - conservative_margin_voxels),
+                'x_max': min(ct_volume.shape[2], int(np.max(x_coords)) + conservative_margin_voxels + 1)
             }
 
 
@@ -452,8 +443,8 @@ class MetalDetector:
                 'y_max': roi_bounds['y_max'],
                 'x_min': roi_bounds['x_min'],
                 'x_max': roi_bounds['x_max'],
-                'center_y': int(np.mean(y_coords_roi)),
-                'center_x': int(np.mean(x_coords_roi))
+                'center_y': int(np.mean(y_coords)),
+                'center_x': int(np.mean(x_coords))
             }
             
             # Apply this conservative ROI to all valid slices
