@@ -3,7 +3,8 @@
     "allow": [
       "Read(C:\\Users\\david\\OneDrive\\Documents\\GitHub\\Metal UNET/**)",
       "Bash(python:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(npm i:*)"
     ],
     "deny": [],
     "ask": []

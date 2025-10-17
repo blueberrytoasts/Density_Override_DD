@@ -71,6 +71,26 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
+    /* Navigation button styling */
+    .nav-button {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100%;
+    }
+    .nav-button button {
+        font-size: 1.2rem !important;
+        padding: 0.5rem 1rem !important;
+        border-radius: 0.5rem !important;
+        height: 2.5rem !important;
+    }
+    /* Keyboard navigation hint */
+    .keyboard-hint {
+        font-size: 0.8rem;
+        color: #666;
+        text-align: center;
+        margin-top: 0.5rem;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -687,16 +707,76 @@ if st.session_state.ct_volume is not None:
         with col1:
             st.subheader("CT Slice Viewer")
             
-            # Slice selector
+            # Slice selector with navigation buttons
             max_slice = st.session_state.ct_volume.shape[0] - 1
-            current_slice = st.slider(
-                "Select Slice",
-                min_value=0,
-                max_value=max_slice,
-                value=st.session_state.current_slice,
-                format="Slice %d"
-            )
-            st.session_state.current_slice = current_slice
+            
+            # Navigation buttons row
+            col_prev, col_slider, col_next = st.columns([1, 8, 1])
+            
+            with col_prev:
+                # Previous button with disabled state
+                prev_disabled = st.session_state.current_slice == 0
+                if st.button(
+                    "⬅️", 
+                    help="Previous slice (Left Arrow)" if not prev_disabled else "Already at first slice", 
+                    key="prev_slice",
+                    disabled=prev_disabled
+                ):
+                    st.session_state.current_slice -= 1
+                    st.rerun()
+            
+            with col_slider:
+                current_slice = st.slider(
+                    "Select Slice",
+                    min_value=0,
+                    max_value=max_slice,
+                    value=st.session_state.current_slice,
+                    format="Slice %d",
+                    key="slice_slider"
+                )
+                st.session_state.current_slice = current_slice
+            
+            with col_next:
+                # Next button with disabled state
+                next_disabled = st.session_state.current_slice == max_slice
+                if st.button(
+                    "➡️", 
+                    help="Next slice (Right Arrow)" if not next_disabled else "Already at last slice", 
+                    key="next_slice",
+                    disabled=next_disabled
+                ):
+                    st.session_state.current_slice += 1
+                    st.rerun()
+            
+            # Quick navigation row
+            col_first, col_jump_back, col_info, col_jump_forward, col_last = st.columns([1, 1, 4, 1, 1])
+            
+            with col_first:
+                if st.button("⏮️", help="First slice", key="first_slice", disabled=st.session_state.current_slice == 0):
+                    st.session_state.current_slice = 0
+                    st.rerun()
+            
+            with col_jump_back:
+                if st.button("⏪", help="Jump back 10 slices", key="jump_back"):
+                    st.session_state.current_slice = max(0, st.session_state.current_slice - 10)
+                    st.rerun()
+            
+            with col_info:
+                st.markdown(
+                    f'<div style="text-align: center; padding: 0.5rem; font-size: 0.9rem; color: #666;">'
+                    f'Slice {st.session_state.current_slice + 1} of {max_slice + 1}</div>', 
+                    unsafe_allow_html=True
+                )
+            
+            with col_jump_forward:
+                if st.button("⏩", help="Jump forward 10 slices", key="jump_forward"):
+                    st.session_state.current_slice = min(max_slice, st.session_state.current_slice + 10)
+                    st.rerun()
+            
+            with col_last:
+                if st.button("⏭️", help="Last slice", key="last_slice", disabled=st.session_state.current_slice == max_slice):
+                    st.session_state.current_slice = max_slice
+                    st.rerun()
             
             # Get current slice data
             ct_slice = st.session_state.ct_volume[current_slice]

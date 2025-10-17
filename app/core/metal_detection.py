@@ -5,7 +5,7 @@ Consolidates all metal detection algorithms into a single interface.
 
 import numpy as np
 from typing import Dict, Tuple, Optional, List, Callable
-from scipy.ndimage import label, binary_dilation, generate_binary_structure
+from scipy.ndimage import label, binary_dilation, generate_binary_structure, binary_fill_holes
 from scipy.ndimage import gaussian_filter, distance_transform_edt
 from enum import Enum
 
@@ -158,8 +158,13 @@ class MetalDetector:
         if threshold and threshold > min_metal_hu:
             metal_mask = ct_volume > threshold
         
+        # Apply hole filling to the metal mask
+        filled_metal_mask, holes_filled_mask = self._fill_metal_holes(metal_mask)
+        
         return {
-            'mask': metal_mask,
+            'mask': filled_metal_mask,  # Return filled mask
+            'original_mask': metal_mask,  # Keep original for reference
+            'holes_filled_mask': holes_filled_mask,  # Mask of filled holes
             'roi_bounds': roi_bounds,
             'threshold': threshold if threshold else min_metal_hu,
             'center_coords': (center_z, center_y, center_x),
@@ -168,7 +173,9 @@ class MetalDetector:
             'metadata': {
                 'dilation_iterations': dilation_iterations,
                 'margin_cm': margin_cm,
-                'fw_percentage': fw_percentage
+                'fw_percentage': fw_percentage,
+                'holes_filled': np.sum(holes_filled_mask),
+                'hole_filling_enabled': True
             }
         }
     
@@ -245,8 +252,13 @@ class MetalDetector:
             'x_max': min(ct_volume.shape[2], np.max(x_coords) + margin_voxels + 1)
         }
         
+        # Apply hole filling to the metal mask
+        filled_metal_mask, holes_filled_mask = self._fill_metal_holes(metal_mask)
+        
         return {
-            'mask': metal_mask,
+            'mask': filled_metal_mask,  # Return filled mask
+            'original_mask': metal_mask,  # Keep original for reference  
+            'holes_filled_mask': holes_filled_mask,  # Mask of filled holes
             'roi_bounds': roi_bounds,
             'threshold': threshold,
             'center_coords': (center_z, center_y, center_x),
@@ -255,7 +267,9 @@ class MetalDetector:
             'metadata': {
                 'intensity_percentile': intensity_percentile,
                 'margin_cm': margin_cm,
-                'min_component_size': min_component_size
+                'min_component_size': min_component_size,
+                'holes_filled': np.sum(holes_filled_mask),
+                'hole_filling_enabled': True
             }
         }
     
@@ -294,7 +308,7 @@ class MetalDetector:
         metal_region = ct_volume[initial_mask]
         if len(metal_region) > 0:
             # Use a more conservative threshold to focus on true metal
-            robust_threshold = np.percentile(metal_region, 50)  # Increased from 25th to 50th percentile
+            robust_threshold = np.percentile(metal_region, 50)  # Reverted to 50th percentile (median)
             # Ensure the refined threshold is not too low
             robust_threshold = max(robust_threshold, 1800)  # Minimum threshold for metal
             refined_mask = ct_volume > robust_threshold
@@ -441,24 +455,89 @@ class MetalDetector:
             # No metal found, return empty result
             return self._empty_result()
         
+        # Apply hole filling to the refined mask
+        filled_metal_mask, holes_filled_mask = self._fill_metal_holes(refined_mask)
+        
+        # Update coordinates and ROI based on filled mask
+        if np.any(filled_metal_mask):
+            z_coords_filled, y_coords_filled, x_coords_filled = np.where(filled_metal_mask)
+            
+            # Update ROI bounds if hole filling expanded the region
+            if len(z_coords_filled) > 0:
+                # Recalculate intelligent Z-bounds with filled mask
+                # Only calculate peak from original metal (not filled holes)
+                peak_metal_hu = np.max(ct_volume[refined_mask])
+                cutoff_hu = peak_metal_hu * 0.50
+                
+                valid_z_slices_filled = []
+                for z in np.unique(z_coords_filled):
+                    slice_mask = filled_metal_mask[z]
+                    if np.any(slice_mask):
+                        # Check both original metal and filled areas
+                        slice_original_mask = refined_mask[z]
+                        slice_metal_values = ct_volume[z][slice_mask & slice_original_mask]  # Only check original metal values for HU
+                        if len(slice_metal_values) > 0 and np.any(slice_metal_values >= cutoff_hu):
+                            valid_z_slices_filled.append(z)
+                
+                if valid_z_slices_filled:
+                    z_min_filled = min(valid_z_slices_filled)
+                    z_max_filled = max(valid_z_slices_filled) + 1
+                else:
+                    z_min_filled = int(np.min(z_coords_filled))
+                    z_max_filled = int(np.max(z_coords_filled)) + 1
+                
+                # Update ROI bounds with potential expansion from hole filling
+                spacing_mm = np.mean(spacing[:2])
+                margin_mm = margin_cm * 10
+                margin_voxels = int(margin_mm / spacing_mm)
+                conservative_margin_voxels = margin_voxels + 5
+                
+                roi_bounds = {
+                    'z_min': z_min_filled,
+                    'z_max': z_max_filled,
+                    'y_min': max(0, int(np.min(y_coords_filled)) - conservative_margin_voxels),
+                    'y_max': min(ct_volume.shape[1], int(np.max(y_coords_filled)) + conservative_margin_voxels + 1),
+                    'x_min': max(0, int(np.min(x_coords_filled)) - conservative_margin_voxels),
+                    'x_max': min(ct_volume.shape[2], int(np.max(x_coords_filled)) + conservative_margin_voxels + 1)
+                }
+                
+                # Update individual regions to use conservative ROI for all valid slices
+                conservative_region = {
+                    'component_id': 0,
+                    'y_min': roi_bounds['y_min'],
+                    'y_max': roi_bounds['y_max'],
+                    'x_min': roi_bounds['x_min'],
+                    'x_max': roi_bounds['x_max'],
+                    'center_y': int(np.mean(y_coords_filled)),
+                    'center_x': int(np.mean(x_coords_filled))
+                }
+                
+                individual_regions = {}
+                for z in valid_z_slices_filled:
+                    individual_regions[z] = [conservative_region.copy()]
+        
         # Calculate average threshold
         avg_threshold = np.mean(slice_thresholds) if slice_thresholds else initial_threshold
         
         return {
-            'mask': refined_mask,
+            'mask': filled_metal_mask,  # Return filled mask instead of original
+            'original_mask': refined_mask,  # Keep original mask for reference
+            'holes_filled_mask': holes_filled_mask,  # Mask of filled holes only
             'roi_bounds': roi_bounds,
             'threshold': avg_threshold,
             'threshold_evolution': slice_thresholds,
             'individual_regions': individual_regions,
-            'center_coords': (int(np.mean(z_coords)), int(np.mean(y_coords)), int(np.mean(x_coords))),
+            'center_coords': (int(np.mean(z_coords_filled)), int(np.mean(y_coords_filled)), int(np.mean(x_coords_filled))) if 'z_coords_filled' in locals() and len(z_coords_filled) > 0 else (int(np.mean(z_coords)), int(np.mean(y_coords)), int(np.mean(x_coords))),
             'method': 'adaptive_3d',
-            'valid_roi_slices': valid_z_slices if 'valid_z_slices' in locals() and valid_z_slices else list(range(roi_bounds['z_min'], roi_bounds['z_max'])),
+            'valid_roi_slices': valid_z_slices_filled if 'valid_z_slices_filled' in locals() and valid_z_slices_filled else (valid_z_slices if 'valid_z_slices' in locals() and valid_z_slices else list(range(roi_bounds['z_min'], roi_bounds['z_max']))),
             'metadata': {
                 'fw_percentage': fw_percentage,
                 'margin_cm': margin_cm,
                 'intensity_percentile': intensity_percentile,
                 'num_components': num_components,
-                'extent_voxels': {'z': z_extent, 'y': y_extent, 'x': x_extent}
+                'extent_voxels': {'z': z_extent, 'y': y_extent, 'x': x_extent},
+                'holes_filled': np.sum(holes_filled_mask),
+                'hole_filling_enabled': True
             }
         }
     
@@ -573,6 +652,35 @@ class MetalDetector:
             return threshold
         return None
     
+    def _fill_metal_holes(self, metal_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Fill holes in metal mask to capture hollow implants (like hip prostheses).
+        
+        Args:
+            metal_mask: 3D binary mask of detected metal
+            
+        Returns:
+            Tuple of (filled_mask, holes_filled_mask)
+                - filled_mask: Metal mask with holes filled
+                - holes_filled_mask: Mask of only the filled holes
+        """
+        filled_mask = np.zeros_like(metal_mask, dtype=bool)
+        holes_filled_mask = np.zeros_like(metal_mask, dtype=bool)
+        
+        # Process each slice individually for better hole detection
+        for z in range(metal_mask.shape[0]):
+            slice_mask = metal_mask[z]
+            
+            if np.any(slice_mask):
+                # Fill holes in this slice
+                slice_filled = binary_fill_holes(slice_mask)
+                filled_mask[z] = slice_filled
+                
+                # Track which pixels were filled (the holes)
+                holes_filled_mask[z] = slice_filled & ~slice_mask
+        
+        return filled_mask, holes_filled_mask
+    
     def _empty_result(self) -> Dict:
         """Return empty result when no metal is detected."""
         return {
@@ -654,4 +762,10 @@ def detect_metal_adaptive(ct_volume: np.ndarray, spacing: Tuple[float, float, fl
 def detect_metal_adaptive_3d(ct_volume: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
     """Adaptive 3D metal detection for backward compatibility."""
     detector = MetalDetector(MetalDetectionMethod.ADAPTIVE_3D)
+    return detector.detect(ct_volume, spacing, **kwargs)
+
+
+def detect_metal_multi_component(ct_volume: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
+    """Multi-component metal detection for backward compatibility."""
+    detector = MetalDetector(MetalDetectionMethod.MULTI_COMPONENT)
     return detector.detect(ct_volume, spacing, **kwargs)
