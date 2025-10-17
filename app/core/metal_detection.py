@@ -308,7 +308,7 @@ class MetalDetector:
         metal_region = ct_volume[initial_mask]
         if len(metal_region) > 0:
             # Use a more conservative threshold to focus on true metal
-            robust_threshold = np.percentile(metal_region, 25)  # Reverted to 50th percentile (median)
+            robust_threshold = np.percentile(metal_region, 5)  # Reverted to 50th percentile (median)
             # Ensure the refined threshold is not too low
             robust_threshold = max(robust_threshold, 1800)  # Minimum threshold for metal
             refined_mask = ct_volume > robust_threshold
