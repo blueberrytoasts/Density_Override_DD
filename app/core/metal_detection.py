@@ -290,7 +290,7 @@ class MetalDetector:
         # Initial detection using high percentile - more aggressive for speed
         initial_threshold = np.percentile(ct_volume, intensity_percentile)
         # Ensure minimum threshold for metal - increase to focus on true metal
-        initial_threshold = max(initial_threshold, 2000)  # Increased from 1500 to 2000
+        initial_threshold = max(initial_threshold, 2500)  # Increased from 1500 to 2000
         initial_mask = ct_volume > initial_threshold
         
         if not np.any(initial_mask):
