@@ -58,7 +58,7 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
         'bright_artifacts': (1.0, 1.0, 0.0, 0.8),         # Bright Yellow (legacy/general)
         'bright_artifact_bone': (1.0, 0.5, 0.0, 0.8),     # Bright Orange (bright artifacts over bone)
         'bright_artifact_tissue': (0.0, 1.0, 0.0, 0.8),   # Bright Green (bright artifacts over tissue)
-        'bright_artifact_mixed': (1.0, 0.0, 1.0, 0.7),    # Bright Magenta (mixed/uncertain)
+        'bright_artifact_mixed': (0.6, 0.4, 0.2, 0.8),    # Brown (mixed/uncertain)
         'bright_artifacts_mild': (0.5, 1.0, 0.5, 0.8),    # Light Green (mild elevation)
         'bright_artifacts_moderate': (1.0, 1.0, 0.0, 0.8), # Bright Yellow (moderate elevation)
         'bright_artifacts_severe': (1.0, 0.5, 0.0, 0.8),  # Orange-Red (severe elevation)
