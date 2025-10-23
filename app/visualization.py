@@ -62,7 +62,10 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
         'bright_artifacts_mild': (0.5, 1.0, 0.5, 0.8),    # Light Green (mild elevation)
         'bright_artifacts_moderate': (1.0, 1.0, 0.0, 0.8), # Bright Yellow (moderate elevation)
         'bright_artifacts_severe': (1.0, 0.5, 0.0, 0.8),  # Orange-Red (severe elevation)
-        'dark_artifacts': (1.0, 0.0, 1.0, 0.8),           # Bright Magenta
+        'dark_artifacts': (1.0, 0.0, 1.0, 0.8),           # Bright Magenta (legacy/general)
+        'dark_artifact_bone': (0.8, 0.0, 0.8, 0.8),       # Dark Magenta (dark artifacts over bone)
+        'dark_artifact_tissue': (1.0, 0.4, 1.0, 0.8),     # Light Magenta (dark artifacts over tissue)
+        'dark_artifact_mixed': (0.5, 0.0, 0.5, 0.8),      # Purple (mixed/uncertain)
         'bone': (0.0, 0.8, 1.0, 0.8)                      # Bright Cyan (distinct from others)
     }
     
@@ -113,13 +116,16 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
             'metal': 'Metal Implant',
             'bright_artifacts': 'Bright Artifacts (Legacy)',
             'bright_artifact_bone': 'Bright Artifacts → Bone',
-            'bright_artifact_tissue': 'Bright Artifacts → Tissue', 
+            'bright_artifact_tissue': 'Bright Artifacts → Tissue',
             'bright_artifact_mixed': 'Bright Artifacts → Mixed',
             'bright_artifacts_mild': 'Bright Artifacts (Mild)',
             'bright_artifacts_moderate': 'Bright Artifacts (Moderate)', 
             'bright_artifacts_severe': 'Bright Artifacts (Severe)',
-            'bone': 'Bone',
-            'dark_artifacts': 'Dark Artifacts'
+            'dark_artifacts': 'Dark Artifacts (Legacy)',
+            'dark_artifact_bone': 'Dark Artifacts → Bone',
+            'dark_artifact_tissue': 'Dark Artifacts → Tissue',
+            'dark_artifact_mixed': 'Dark Artifacts → Mixed',
+            'bone': 'Bone'
         }
     
     # Only add legend items for masks that are being displayed

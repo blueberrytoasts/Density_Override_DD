@@ -15,16 +15,19 @@ class DiscriminationMethod(Enum):
     DISTANCE_BASED = "distance_based"      # Fast, distance from metal
     EDGE_BASED = "edge_based"              # Enhanced edge coherence
     TEXTURE_BASED = "texture_based"        # Advanced texture/gradient
+    STAR_PROFILE = "star_profile"          # Original star profile
+    PROFILE_BASED = "star_profile"         # Alias for backward compatibility
 
 
 class ArtifactDiscriminator:
     """
     Unified interface for bone vs bright artifact discrimination.
-
+    
     Methods:
         DISTANCE_BASED: Fast discrimination using distance from metal
         EDGE_BASED: Enhanced edge coherence analysis
         TEXTURE_BASED: Advanced texture and gradient features
+        STAR_PROFILE: Original star profile analysis
     """
     
     def __init__(self, method: DiscriminationMethod = DiscriminationMethod.DISTANCE_BASED):
@@ -39,6 +42,7 @@ class ArtifactDiscriminator:
             DiscriminationMethod.DISTANCE_BASED: self._discriminate_distance,
             DiscriminationMethod.EDGE_BASED: self._discriminate_edge,
             DiscriminationMethod.TEXTURE_BASED: self._discriminate_texture,
+            DiscriminationMethod.STAR_PROFILE: self._discriminate_star
         }
     
     def discriminate(self, ct_volume: np.ndarray, metal_mask: np.ndarray,
@@ -311,6 +315,97 @@ class ArtifactDiscriminator:
             }
         }
     
+    def _discriminate_star(self, ct_volume: np.ndarray, metal_mask: np.ndarray,
+                          bright_mask: np.ndarray, spacing: Tuple[float, float, float],
+                          num_angles: int = 16, **kwargs) -> Dict:
+        """
+        Original star profile discrimination.
+        
+        Principle: Analyze radial profiles from metal centers to classify tissue.
+        
+        Algorithm:
+        1. Shoot radial lines from metal centers
+        2. Analyze HU profiles along lines
+        3. Classify based on profile characteristics
+        """
+        # Find metal centers
+        z_coords, y_coords, x_coords = np.where(metal_mask)
+        if len(z_coords) == 0:
+            return self._empty_result()
+        
+        center_z = int(np.mean(z_coords))
+        center_y = int(np.mean(y_coords))
+        center_x = int(np.mean(x_coords))
+        
+        # Initialize masks
+        bone_mask = np.zeros_like(bright_mask)
+        artifact_mask = np.zeros_like(bright_mask)
+        confidence_map = np.zeros_like(ct_volume, dtype=float)
+        
+        # Analyze each slice with metal
+        for z in range(ct_volume.shape[0]):
+            if not np.any(metal_mask[z]) or not np.any(bright_mask[z]):
+                continue
+            
+            slice_data = ct_volume[z]
+            slice_bright = bright_mask[z]
+            
+            # Find metal center in this slice
+            y_metal, x_metal = np.where(metal_mask[z])
+            if len(y_metal) > 0:
+                slice_center_y = int(np.mean(y_metal))
+                slice_center_x = int(np.mean(x_metal))
+                
+                # Analyze profiles
+                profiles = self._get_star_profiles(
+                    slice_data, slice_center_y, slice_center_x, num_angles
+                )
+                
+                # Classify based on profile characteristics
+                for y, x in zip(*np.where(slice_bright)):
+                    # Distance from center
+                    dist = np.sqrt((y - slice_center_y)**2 + (x - slice_center_x)**2)
+                    
+                    # Angle from center
+                    angle = np.arctan2(y - slice_center_y, x - slice_center_x)
+                    
+                    # Find closest profile
+                    profile_idx = int((angle + np.pi) / (2 * np.pi) * num_angles) % num_angles
+                    
+                    if profile_idx < len(profiles):
+                        profile = profiles[profile_idx]
+                        
+                        # Analyze profile at this distance
+                        if dist < len(profile):
+                            local_value = slice_data[y, x]
+                            profile_value = profile[int(dist)]
+                            
+                            # Bone: consistent with smooth profile
+                            # Artifact: deviates from smooth profile
+                            deviation = abs(local_value - profile_value)
+                            
+                            if deviation < 200:  # Consistent with profile
+                                bone_mask[z, y, x] = True
+                            else:  # Deviates from profile
+                                artifact_mask[z, y, x] = True
+                            
+                            confidence_map[z, y, x] = 1.0 - (deviation / 1000.0)
+        
+        # Ensure mutual exclusivity
+        artifact_mask = artifact_mask & (~bone_mask)
+        
+        return {
+            'bone_mask': bone_mask,
+            'artifact_mask': artifact_mask,
+            'confidence_map': np.clip(confidence_map, 0, 1),
+            'method': 'star_profile',
+            'metadata': {
+                'num_angles': num_angles,
+                'bone_voxels': np.sum(bone_mask),
+                'artifact_voxels': np.sum(artifact_mask)
+            }
+        }
+    
     def _calculate_local_variance(self, volume: np.ndarray, window_size: int = 5) -> np.ndarray:
         """Calculate local variance in a sliding window."""
         from scipy.ndimage import uniform_filter
@@ -385,3 +480,22 @@ class ArtifactDiscriminator:
 
 
 # Convenience functions for backward compatibility
+def discriminate_fast(ct_volume: np.ndarray, metal_mask: np.ndarray,
+                      bright_mask: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
+    """Fast distance-based discrimination."""
+    discriminator = ArtifactDiscriminator(DiscriminationMethod.DISTANCE_BASED)
+    return discriminator.discriminate(ct_volume, metal_mask, bright_mask, spacing, **kwargs)
+
+
+def discriminate_enhanced(ct_volume: np.ndarray, metal_mask: np.ndarray,
+                         bright_mask: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
+    """Enhanced edge-based discrimination."""
+    discriminator = ArtifactDiscriminator(DiscriminationMethod.EDGE_BASED)
+    return discriminator.discriminate(ct_volume, metal_mask, bright_mask, spacing, **kwargs)
+
+
+def discriminate_advanced(ct_volume: np.ndarray, metal_mask: np.ndarray,
+                         bright_mask: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
+    """Advanced texture-based discrimination."""
+    discriminator = ArtifactDiscriminator(DiscriminationMethod.TEXTURE_BASED)
+    return discriminator.discriminate(ct_volume, metal_mask, bright_mask, spacing, **kwargs)

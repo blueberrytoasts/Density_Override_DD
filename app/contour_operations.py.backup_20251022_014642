@@ -114,34 +114,26 @@ def classify_artifacts_contextually(ct_volume, artifact_mask, metal_mask, spacin
                                    bone_range=(500, 1500), tissue_range=(-100, 300),
                                    window_size=(7, 7, 3), artifact_type="artifact"):
     """
-    Classify artifacts based on the underlying tissue they are corrupting.
+    Classify ANY artifacts (bright or dark) based on local tissue context.
 
-    This function uses neighborhood composition analysis to determine whether each
-    artifact voxel is corrupting bone or soft tissue. The classification is based
-    on what HU values surround the artifact, not on the artifact's own characteristics.
-
-    Algorithm:
-        1. For each artifact voxel, examine a 7×7×3 mm neighborhood
-        2. Count voxels with bone-HU (500-1500) vs soft-tissue-HU (-100 to 300)
-        3. Assign scores based on neighborhood composition (primary criterion)
-        4. Use distance from metal as secondary criterion (modest weight)
-        5. Classify as "over bone" if bone context dominates, "over tissue" otherwise
+    PRINCIPLE: Determine what tissue is BENEATH the artifact by examining
+    the surrounding neighborhood composition, not artifact characteristics.
 
     Args:
-        ct_volume: 3D CT volume in Hounsfield Units
-        artifact_mask: Binary mask of artifact voxels to classify
-        metal_mask: Binary mask of metal implant regions
-        spacing: Voxel spacing in mm (z, y, x)
-        bone_range: HU range defining bone tissue (default: 500-1500)
-        tissue_range: HU range defining soft tissue (default: -100 to 300)
-        window_size: Neighborhood analysis window size in voxels (z, y, x)
-        artifact_type: Descriptor for logging ("bright" or "dark")
+        ct_volume: CT volume in HU
+        artifact_mask: Binary mask of artifacts to classify
+        metal_mask: Binary mask of metal regions
+        spacing: Voxel spacing (z, y, x) in mm
+        bone_range: HU range for bone tissue
+        tissue_range: HU range for soft tissue
+        window_size: Size of neighborhood analysis window
+        artifact_type: String descriptor for logging (e.g., "bright", "dark")
 
     Returns:
-        Dictionary containing:
-            - artifact_bone: Artifacts overlying bone (restore to bone HU)
-            - artifact_tissue: Artifacts overlying soft tissue (restore to tissue HU)
-            - artifact_mixed: Uncertain classification (ambiguous context)
+        Dict with contextual artifact masks:
+            - artifact_bone: Artifacts over bone tissue
+            - artifact_tissue: Artifacts over soft tissue
+            - artifact_mixed: Uncertain classification
     """
     print(f"Classifying {np.sum(artifact_mask):,} {artifact_type} artifact voxels contextually...")
     
@@ -183,52 +175,54 @@ def classify_artifacts_contextually(ct_volume, artifact_mask, metal_mask, spacin
                 ct_volume, (z, y, x), window_size, bone_range, tissue_range
             )
             
-            # === CONTEXTUAL CLASSIFICATION ALGORITHM ===
-            # Goal: Identify what tissue lies beneath this artifact voxel
-            # Method: Score based on neighborhood composition, NOT artifact properties
+            # Enhanced contextual classification logic
+            # PRINCIPLE: Determine underlying tissue based on neighborhood composition,
+            # not artifact characteristics (distance/gradient/HU don't tell us what's underneath!)
 
-            bone_context_score = 0      # Evidence for bone underneath
-            tissue_context_score = 0    # Evidence for soft tissue underneath
+            # Scores for underlying tissue type (what is BENEATH the artifact)
+            bone_context_score = 0
+            tissue_context_score = 0
 
-            # PRIMARY CRITERION: Neighborhood tissue composition (weighted 5-3-1)
-            # Rationale: Artifacts surrounded by bone-HU values are likely corrupting bone
+            # 1. PRIMARY: Neighborhood composition - what surrounds this voxel?
             if neighborhood['bone_ratio'] > 0.6:
-                bone_context_score += 5      # >60% neighbors are bone-HU
+                bone_context_score += 5      # Strongly surrounded by bone-HU voxels
             elif neighborhood['bone_ratio'] > 0.4:
-                bone_context_score += 3      # 40-60% neighbors are bone-HU
+                bone_context_score += 3      # Moderately surrounded by bone
             elif neighborhood['bone_ratio'] > 0.2:
-                bone_context_score += 1      # 20-40% neighbors are bone-HU
+                bone_context_score += 1      # Some bone context
 
             if neighborhood['tissue_ratio'] > 0.6:
-                tissue_context_score += 5    # >60% neighbors are tissue-HU
+                tissue_context_score += 5    # Strongly surrounded by tissue-HU voxels
             elif neighborhood['tissue_ratio'] > 0.4:
-                tissue_context_score += 3    # 40-60% neighbors are tissue-HU
+                tissue_context_score += 3    # Moderately surrounded by tissue
             elif neighborhood['tissue_ratio'] > 0.2:
-                tissue_context_score += 1    # 20-40% neighbors are tissue-HU
+                tissue_context_score += 1    # Some tissue context
 
-            # SECONDARY CRITERION: Distance from metal (modest weight +1)
-            # Rationale: Distant artifacts more likely near bone structures, but not reliable alone
+            # 2. SECONDARY: Distance from metal (modest influence)
+            # Note: Artifacts can be far from metal, bone can be close to metal
             if distance_mm < 5:
-                pass  # Too close to metal - ambiguous (bone can be adjacent to implant)
+                # Very close - slightly ambiguous (could be bone right at implant)
+                pass
             elif distance_mm > 30:
-                bone_context_score += 1  # Far from metal suggests anatomical bone region
+                # Very far - more likely to be bone structures
+                bone_context_score += 1
 
-            # TIE-BREAKER: Use dominant ratio when scores equal
+            # 3. TERTIARY: Use dominant tissue as tie-breaker when scores are equal
             if bone_context_score == tissue_context_score:
                 if neighborhood['bone_ratio'] > neighborhood['tissue_ratio']:
                     bone_context_score += 1
                 elif neighborhood['tissue_ratio'] > neighborhood['bone_ratio']:
                     tissue_context_score += 1
 
-            # CLASSIFICATION: Assign to category with higher context score
-            if bone_context_score > tissue_context_score:
-                artifact_bone[z, y, x] = True       # Corrupting bone tissue
+            # Make classification decision based on UNDERLYING TISSUE CONTEXT
+            if bone_context_score > tissue_context_score:  # Surrounded by bone-HU = artifact OVER bone
+                artifact_bone[z, y, x] = True  # Artifact over bone (should restore to bone HU)
                 n_bone += 1
-            elif tissue_context_score > bone_context_score:
-                artifact_tissue[z, y, x] = True     # Corrupting soft tissue
+            elif tissue_context_score > bone_context_score:  # Surrounded by tissue-HU = artifact OVER tissue
+                artifact_tissue[z, y, x] = True  # Artifact over tissue (should restore to tissue HU)
                 n_tissue += 1
-            else:
-                artifact_mixed[z, y, x] = True      # Ambiguous/uncertain context
+            else:  # Equal scores - genuinely uncertain
+                artifact_mixed[z, y, x] = True  # Uncertain what tissue is being corrupted
                 n_mixed += 1
 
     print(f"Contextual classification results ({artifact_type}):")
@@ -248,27 +242,21 @@ def classify_bright_artifacts_contextually(ct_volume, bright_mask, metal_mask, s
                                           bone_distance_threshold_mm=20.0, bone_ratio_threshold=0.4,
                                           window_size=(7, 7, 3)):
     """
-    Classify bright artifacts based on underlying tissue context.
-
-    Wrapper function for backward compatibility. Calls classify_artifacts_contextually()
-    with artifact_type="bright" and returns results with legacy naming convention.
+    Wrapper for backward compatibility - classifies bright artifacts contextually.
 
     Args:
-        ct_volume: 3D CT volume in Hounsfield Units
-        bright_mask: Binary mask of bright artifact voxels
-        metal_mask: Binary mask of metal implant
-        spacing: Voxel spacing in mm (z, y, x)
-        bone_range: HU range defining bone (default: 500-1500)
-        tissue_range: HU range defining soft tissue (default: -100 to 300)
-        bone_distance_threshold_mm: DEPRECATED - no longer used
-        bone_ratio_threshold: DEPRECATED - no longer used
-        window_size: Neighborhood window size in voxels (z, y, x)
+        ct_volume: CT volume in HU
+        bright_mask: Binary mask of bright artifacts
+        metal_mask: Binary mask of metal regions
+        spacing: Voxel spacing (z, y, x) in mm
+        bone_range: HU range for bone tissue
+        tissue_range: HU range for soft tissue
+        bone_distance_threshold_mm: DEPRECATED (not used)
+        bone_ratio_threshold: DEPRECATED (not used)
+        window_size: Size of neighborhood analysis window
 
     Returns:
-        Dictionary with legacy keys:
-            - bright_artifact_bone: Bright artifacts over bone
-            - bright_artifact_tissue: Bright artifacts over soft tissue
-            - bright_artifact_mixed: Uncertain classification
+        Dict with bright artifact contextual masks
     """
     result = classify_artifacts_contextually(
         ct_volume, bright_mask, metal_mask, spacing,
@@ -287,25 +275,19 @@ def classify_dark_artifacts_contextually(ct_volume, dark_mask, metal_mask, spaci
                                         bone_range=(500, 1500), tissue_range=(-100, 300),
                                         window_size=(7, 7, 3)):
     """
-    Classify dark artifacts based on underlying tissue context.
-
-    Uses neighborhood composition analysis to determine whether dark artifacts
-    are corrupting bone or soft tissue. Same algorithm as bright artifacts.
+    Classify dark artifacts based on local tissue context.
 
     Args:
-        ct_volume: 3D CT volume in Hounsfield Units
-        dark_mask: Binary mask of dark artifact voxels
-        metal_mask: Binary mask of metal implant
-        spacing: Voxel spacing in mm (z, y, x)
-        bone_range: HU range defining bone (default: 500-1500)
-        tissue_range: HU range defining soft tissue (default: -100 to 300)
-        window_size: Neighborhood window size in voxels (z, y, x)
+        ct_volume: CT volume in HU
+        dark_mask: Binary mask of dark artifacts
+        metal_mask: Binary mask of metal regions
+        spacing: Voxel spacing (z, y, x) in mm
+        bone_range: HU range for bone tissue
+        tissue_range: HU range for soft tissue
+        window_size: Size of neighborhood analysis window
 
     Returns:
-        Dictionary containing:
-            - dark_artifact_bone: Dark artifacts over bone
-            - dark_artifact_tissue: Dark artifacts over soft tissue
-            - dark_artifact_mixed: Uncertain classification
+        Dict with dark artifact contextual masks
     """
     result = classify_artifacts_contextually(
         ct_volume, dark_mask, metal_mask, spacing,
@@ -625,7 +607,7 @@ def create_sequential_masks(ct_volume, metal_mask, spacing, discrimination_metho
         'fast': DiscriminationMethod.DISTANCE_BASED,
         'edge': DiscriminationMethod.EDGE_BASED,
         'enhanced': DiscriminationMethod.EDGE_BASED,
-        'texture': DiscriminationMethod.TEXTURE_BASED
+        'profile': DiscriminationMethod.PROFILE_BASED
     }
     
     disc_method = method_map.get(discrimination_method, DiscriminationMethod.DISTANCE_BASED)
@@ -1183,3 +1165,53 @@ def save_all_contours_as_nifti(masks_dict, affine, output_prefix):
             print(f"Saved {mask_name} to {output_path}")
 
 
+def load_nifti_mask(filepath):
+    """
+    Load a binary mask from a NIFTI file.
+    
+    Args:
+        filepath: Path to the NIFTI file
+        
+    Returns:
+        Binary mask as numpy array
+    """
+    nifti_img = nib.load(filepath)
+    mask = nifti_img.get_fdata().astype(bool)
+    return mask, nifti_img.affine
+
+
+def combine_masks_multilabel(masks_dict):
+    """
+    Combine multiple binary masks into a single multi-label mask.
+    
+    Args:
+        masks_dict: Dictionary of {label_name: (mask, label_value)}
+        
+    Returns:
+        Multi-label mask where each tissue type has a unique integer value
+    """
+    # Get shape from first mask
+    first_mask = next(iter(masks_dict.values()))[0]
+    multilabel = np.zeros_like(first_mask, dtype=np.uint8)
+    
+    # Assign labels in order of priority (metal should override others)
+    priority_order = ['metal', 'bright_artifacts', 'dark_artifacts', 'bone']
+    
+    label_map = {}
+    current_label = 1
+    
+    for tissue_type in priority_order:
+        if tissue_type in masks_dict:
+            mask, _ = masks_dict[tissue_type]
+            multilabel[mask] = current_label
+            label_map[tissue_type] = current_label
+            current_label += 1
+    
+    # Handle any remaining masks
+    for tissue_type, (mask, _) in masks_dict.items():
+        if tissue_type not in priority_order:
+            multilabel[mask] = current_label
+            label_map[tissue_type] = current_label
+            current_label += 1
+    
+    return multilabel, label_map
