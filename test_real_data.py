@@ -10,7 +10,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
 
 import numpy as np
-from dicom_utils import load_dicom_series
+from dicom_utils import load_dicom_series_to_hu
 from core.metal_detection import MetalDetector, MetalDetectionMethod
 from core.discrimination import ArtifactDiscriminator, DiscriminationMethod
 
@@ -68,12 +68,23 @@ def main():
     print("="*60)
 
     try:
-        ct_volume, spacing, slice_positions = load_dicom_series(patient_folder)
+        ct_volume, spatial_meta = load_dicom_series_to_hu(patient_folder)
+
+        if ct_volume is None or spatial_meta is None:
+            print(f"[ERROR] Failed to load DICOM data from {patient_folder}")
+            return 1
+
+        # Extract spacing (z, y, x) from spatial metadata
+        spacing = spatial_meta['spacing']
+
         print(f"[OK] Loaded CT volume: {ct_volume.shape}")
-        print(f"     Spacing: {spacing} mm")
+        print(f"     Spacing: {spacing} mm (z, y, x)")
         print(f"     HU range: {np.min(ct_volume):.0f} to {np.max(ct_volume):.0f}")
+        print(f"     Slice positions: {len(spatial_meta['slice_z_positions'])} slices")
     except Exception as e:
         print(f"[ERROR] Failed to load DICOM: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
 
     # Test 1: Metal Detection - Simplified
