@@ -68,10 +68,23 @@ def main():
     print("="*60)
 
     try:
-        ct_volume, spatial_meta = load_dicom_series_to_hu(patient_folder)
+        # Find CT subdirectory (same approach as main.py)
+        from pathlib import Path
+        patient_path = Path(patient_folder)
+        ct_dirs = [d for d in patient_path.iterdir() if d.is_dir() and "CT" in d.name]
+
+        if not ct_dirs:
+            print(f"[ERROR] No CT subdirectory found in {patient_folder}")
+            print("Expected a folder with 'CT' in the name")
+            return 1
+
+        ct_dir = ct_dirs[0]
+        print(f"Loading CT series from: {ct_dir.name}")
+
+        ct_volume, spatial_meta = load_dicom_series_to_hu(str(ct_dir))
 
         if ct_volume is None or spatial_meta is None:
-            print(f"[ERROR] Failed to load DICOM data from {patient_folder}")
+            print(f"[ERROR] Failed to load DICOM data from {ct_dir}")
             return 1
 
         # Extract spacing (z, y, x) from spatial metadata
