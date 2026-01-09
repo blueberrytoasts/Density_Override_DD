@@ -861,15 +861,34 @@ if st.session_state.ct_volume is not None:
                                     # Fix spacing to be positive
                                     spacing = np.abs(st.session_state.ct_metadata['spacing'])
 
-                                    # First, create dark artifact mask (same as other methods)
-                                    dark_mask = (st.session_state.ct_volume >= dark_low) & \
-                                                (st.session_state.ct_volume <= dark_high) & \
-                                                (~metal_mask)
+                                    # Create body mask to exclude air outside patient
+                                    from body_mask import create_body_mask
+                                    body_mask = create_body_mask(st.session_state.ct_volume, air_threshold=-400)
 
-                                    # Create bright mask to discriminate
+                                    # Create ROI mask if bounds provided
+                                    if roi_bounds is not None:
+                                        z_min = int(roi_bounds['z_min'])
+                                        z_max = int(roi_bounds['z_max'])
+                                        y_min = int(roi_bounds['y_min'])
+                                        y_max = int(roi_bounds['y_max'])
+                                        x_min = int(roi_bounds['x_min'])
+                                        x_max = int(roi_bounds['x_max'])
+
+                                        roi_mask = np.zeros_like(st.session_state.ct_volume, dtype=bool)
+                                        roi_mask[z_min:z_max, y_min:y_max, x_min:x_max] = True
+                                        constraint_mask = body_mask & roi_mask
+                                    else:
+                                        constraint_mask = body_mask
+
+                                    # First, create dark artifact mask (constrained to body and ROI)
+                                    dark_mask = (st.session_state.ct_volume >= dark_low) & \
+                                                (st.session_state.ct_volume <= dark_high)
+                                    dark_mask = dark_mask & (~metal_mask) & constraint_mask
+
+                                    # Create bright mask to discriminate (constrained to body and ROI)
                                     bright_mask = (st.session_state.ct_volume >= bright_low) & \
-                                                  (st.session_state.ct_volume <= bright_high) & \
-                                                  (~metal_mask) & (~dark_mask)
+                                                  (st.session_state.ct_volume <= bright_high)
+                                    bright_mask = bright_mask & (~metal_mask) & (~dark_mask) & constraint_mask
 
                                     # Use star profile discrimination
                                     discriminator = ArtifactDiscriminator(DiscriminationMethod.STAR_PROFILE)
