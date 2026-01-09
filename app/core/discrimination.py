@@ -15,6 +15,7 @@ class DiscriminationMethod(Enum):
     DISTANCE_BASED = "distance_based"      # Fast, distance from metal
     EDGE_BASED = "edge_based"              # Enhanced edge coherence
     TEXTURE_BASED = "texture_based"        # Advanced texture/gradient
+    STAR_PROFILE = "star_profile"          # Star profile-based discrimination (recovered)
 
 
 class ArtifactDiscriminator:
@@ -39,6 +40,7 @@ class ArtifactDiscriminator:
             DiscriminationMethod.DISTANCE_BASED: self._discriminate_distance,
             DiscriminationMethod.EDGE_BASED: self._discriminate_edge,
             DiscriminationMethod.TEXTURE_BASED: self._discriminate_texture,
+            DiscriminationMethod.STAR_PROFILE: self._discriminate_star_profile,
         }
     
     def discriminate(self, ct_volume: np.ndarray, metal_mask: np.ndarray,
@@ -346,31 +348,280 @@ class ArtifactDiscriminator:
         
         return smoothness
     
+    def _discriminate_star_profile(self, ct_volume: np.ndarray, metal_mask: np.ndarray,
+                                   bright_mask: np.ndarray, spacing: Tuple[float, float, float],
+                                   num_angles: int = 16) -> Dict:
+        """
+        Star profile-based discrimination (RECOVERED ALGORITHM).
+
+        Principle: Analyzes radial HU profiles to distinguish bone from artifacts.
+
+        Bone characteristics:
+        - Broad peaks (3-5mm width)
+        - Smooth transitions (low gradient variance)
+        - Consistent across angles (low directional variance)
+        - Gradual gradients
+
+        Artifact characteristics:
+        - Narrow peaks (<2mm width)
+        - Sharp edges (high gradient variance)
+        - Variable across angles (high directional variance)
+        - Steep gradients
+
+        Args:
+            num_angles: Number of radial profiles to analyze (default: 16)
+        """
+        from scipy.ndimage import gaussian_filter1d
+        from skimage.draw import line
+
+        bone_mask = np.zeros_like(bright_mask)
+        artifact_mask = np.zeros_like(bright_mask)
+        confidence_map = np.zeros_like(ct_volume, dtype=float)
+
+        # Process each slice
+        for z in range(ct_volume.shape[0]):
+            if not np.any(bright_mask[z]) or not np.any(metal_mask[z]):
+                continue
+
+            # Find metal center on this slice
+            metal_coords = np.where(metal_mask[z])
+            if len(metal_coords[0]) == 0:
+                continue
+
+            center_y = int(np.mean(metal_coords[0]))
+            center_x = int(np.mean(metal_coords[1]))
+
+            # Get star profiles for this slice
+            profiles = self._get_star_profiles_detailed(
+                ct_volume[z], center_y, center_x, num_angles
+            )
+
+            # Analyze each bright pixel on this slice
+            bright_coords = np.where(bright_mask[z])
+
+            for i in range(len(bright_coords[0])):
+                pixel_y = bright_coords[0][i]
+                pixel_x = bright_coords[1][i]
+
+                # Calculate angle to this pixel from metal center
+                dy = pixel_y - center_y
+                dx = pixel_x - center_x
+                angle = np.arctan2(dy, dx)
+                if angle < 0:
+                    angle += 2 * np.pi
+
+                # Find nearest profile
+                profile_idx = int((angle / (2 * np.pi)) * num_angles) % num_angles
+                if profile_idx >= len(profiles):
+                    continue
+
+                profile = profiles[profile_idx]
+
+                # Calculate distance from metal center
+                distance_voxels = np.sqrt(dy**2 + dx**2)
+                distance_mm = distance_voxels * np.mean(spacing[:2])
+
+                # Analyze profile characteristics at this distance
+                characteristics = self._analyze_profile_characteristics(
+                    profile, distance_mm, spacing
+                )
+
+                # Classify based on characteristics
+                is_bone = self._classify_from_profile(characteristics)
+
+                if is_bone:
+                    bone_mask[z, pixel_y, pixel_x] = True
+                    confidence_map[z, pixel_y, pixel_x] = characteristics['confidence']
+                else:
+                    artifact_mask[z, pixel_y, pixel_x] = True
+                    confidence_map[z, pixel_y, pixel_x] = characteristics['confidence']
+
+        return {
+            'bone_mask': bone_mask,
+            'artifact_mask': artifact_mask,
+            'confidence_map': confidence_map,
+            'method': 'star_profile',
+            'metadata': {
+                'num_angles': num_angles,
+                'bone_voxels': np.sum(bone_mask),
+                'artifact_voxels': np.sum(artifact_mask)
+            }
+        }
+
+    def _get_star_profiles_detailed(self, slice_data: np.ndarray, center_y: int,
+                                     center_x: int, num_angles: int) -> list:
+        """
+        Get detailed radial profiles from center point.
+
+        Returns list of profile dictionaries with HU values, distances, and gradients.
+        """
+        from scipy.ndimage import gaussian_filter1d
+        from skimage.draw import line
+
+        profiles = []
+        max_radius = int(max(slice_data.shape) * 1.5)
+
+        for i in range(num_angles):
+            angle = 2 * np.pi * i / num_angles
+
+            # Calculate endpoint
+            end_y = int(center_y + max_radius * np.sin(angle))
+            end_x = int(center_x + max_radius * np.cos(angle))
+
+            # Clip to image bounds
+            end_y = max(0, min(slice_data.shape[0] - 1, end_y))
+            end_x = max(0, min(slice_data.shape[1] - 1, end_x))
+
+            # Get line coordinates
+            rr, cc = line(center_y, center_x, end_y, end_x)
+
+            # Get HU values and distances
+            hu_values = slice_data[rr, cc]
+            distances = np.sqrt((rr - center_y)**2 + (cc - center_x)**2)
+
+            # Smooth the profile
+            if len(hu_values) > 5:
+                hu_values_smooth = gaussian_filter1d(hu_values.astype(float), sigma=2.0)
+            else:
+                hu_values_smooth = hu_values.astype(float)
+
+            # Calculate gradient
+            gradient = np.gradient(hu_values_smooth)
+
+            profiles.append({
+                'hu_values': hu_values_smooth,
+                'distances': distances,
+                'gradient': gradient,
+                'angle': angle
+            })
+
+        return profiles
+
+    def _analyze_profile_characteristics(self, profile: Dict, distance_mm: float,
+                                         spacing: Tuple[float, float, float]) -> Dict:
+        """
+        Analyze profile characteristics at a given distance.
+
+        Returns dictionary with characteristics and classification confidence.
+        """
+        # Find index closest to desired distance
+        distances = profile['distances'] * np.mean(spacing[:2])  # Convert to mm
+        idx = np.argmin(np.abs(distances - distance_mm))
+
+        # Get local window around this point
+        window_size = 5
+        idx_min = max(0, idx - window_size)
+        idx_max = min(len(profile['hu_values']), idx + window_size + 1)
+
+        hu_window = profile['hu_values'][idx_min:idx_max]
+        grad_window = profile['gradient'][idx_min:idx_max]
+
+        # Calculate characteristics
+        peak_width_mm = self._calculate_peak_width(hu_window, spacing)
+        smoothness = self._calculate_smoothness_score(grad_window)
+        gradient_magnitude = np.abs(np.mean(grad_window))
+
+        # Bone scoring: broad peaks, smooth, gradual gradients
+        bone_score = 0.0
+
+        # Peak width criterion (bone: 3-5mm, artifact: <2mm)
+        if peak_width_mm > 3.0:
+            bone_score += 0.4
+        elif peak_width_mm < 2.0:
+            bone_score -= 0.4
+
+        # Smoothness criterion (higher = more bone-like)
+        if smoothness > 0.7:
+            bone_score += 0.3
+        elif smoothness < 0.3:
+            bone_score -= 0.3
+
+        # Gradient criterion (lower = more bone-like)
+        if gradient_magnitude < 50:
+            bone_score += 0.3
+        elif gradient_magnitude > 150:
+            bone_score -= 0.3
+
+        # Convert to confidence (0 to 1)
+        confidence = (bone_score + 1.0) / 2.0  # Normalize to [0, 1]
+
+        return {
+            'peak_width_mm': peak_width_mm,
+            'smoothness': smoothness,
+            'gradient_magnitude': gradient_magnitude,
+            'bone_score': bone_score,
+            'confidence': confidence
+        }
+
+    def _classify_from_profile(self, characteristics: Dict) -> bool:
+        """
+        Classify as bone (True) or artifact (False) based on profile characteristics.
+        """
+        return characteristics['bone_score'] > 0.0
+
+    def _calculate_peak_width(self, hu_values: np.ndarray, spacing: Tuple[float, float, float]) -> float:
+        """
+        Calculate peak width in mm using Full Width at Half Maximum (FWHM).
+        """
+        if len(hu_values) < 3:
+            return 0.0
+
+        peak_val = np.max(hu_values)
+        half_max = peak_val / 2.0
+
+        # Find points above half maximum
+        above_half = hu_values > half_max
+        if not np.any(above_half):
+            return 0.0
+
+        # Width in voxels
+        width_voxels = np.sum(above_half)
+
+        # Convert to mm
+        width_mm = width_voxels * np.mean(spacing[:2])
+
+        return width_mm
+
+    def _calculate_smoothness_score(self, gradient: np.ndarray) -> float:
+        """
+        Calculate smoothness score (0 to 1, higher = smoother).
+        """
+        if len(gradient) < 2:
+            return 1.0
+
+        # Variance of gradient (lower = smoother)
+        grad_variance = np.var(gradient)
+
+        # Convert to score (inverse relationship)
+        smoothness = 1.0 / (1.0 + grad_variance / 100.0)
+
+        return smoothness
+
     def _get_star_profiles(self, slice_data: np.ndarray, center_y: int, center_x: int,
                           num_angles: int) -> list:
-        """Get radial profiles from center point."""
+        """Get radial profiles from center point (legacy method for compatibility)."""
         profiles = []
         max_radius = max(slice_data.shape)
-        
+
         for i in range(num_angles):
             angle = 2 * np.pi * i / num_angles
             profile = []
-            
+
             for r in range(max_radius):
                 y = int(center_y + r * np.sin(angle))
                 x = int(center_x + r * np.cos(angle))
-                
+
                 if 0 <= y < slice_data.shape[0] and 0 <= x < slice_data.shape[1]:
                     profile.append(slice_data[y, x])
                 else:
                     break
-            
+
             if profile:
                 # Smooth the profile
                 from scipy.ndimage import gaussian_filter1d
                 profile = gaussian_filter1d(profile, sigma=2.0)
                 profiles.append(profile)
-        
+
         return profiles
     
     def _empty_result(self) -> Dict:

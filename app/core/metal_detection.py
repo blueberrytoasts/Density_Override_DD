@@ -179,37 +179,92 @@ class MetalDetector:
     def _detect_adaptive_3d(self, ct_volume: np.ndarray, spacing: Tuple[float, float, float],
                            fw_percentage: float = 75.0,
                            margin_cm: float = 1.0,
-                           intensity_percentile: float = 99.5) -> Dict:
+                           intensity_percentile: float = 99.5,
+                           use_star_profiles: bool = True) -> Dict:
         """
-        Advanced 3D adaptive metal detection with multi-planar analysis.
+        Advanced 3D adaptive metal detection with multi-planar analysis and star profiles.
 
         This method:
-        1. Detects metal using 99.5th percentile threshold (min 2000 HU)
+        1. Detects metal using 99.5th percentile threshold (min 2500 HU)
         2. Analyzes axial, coronal, and sagittal projections for spatial extent
-        3. Restricts ROI to 50th percentile (median) of detected metal HU values
-        4. Creates focused ROI centered on core metal implant
-        5. Constrains ROI depth to only slices containing substantial metal
+        3. Optionally refines threshold using star profile analysis per slice
+        4. Restricts ROI to 50th percentile (median) of detected metal HU values
+        5. Creates focused ROI centered on core metal implant
+        6. Constrains ROI depth to only slices containing substantial metal
+
+        Args:
+            use_star_profiles: If True, uses star profile FW% analysis per slice
+                             for adaptive thresholding (recovered algorithm)
         """
         # Initial detection using high percentile - more aggressive for speed
         initial_threshold = np.percentile(ct_volume, intensity_percentile)
         # Ensure minimum threshold for metal - increase to focus on true metal
         initial_threshold = max(initial_threshold, 2500)  # Increased from 1500 to 2000
         initial_mask = ct_volume > initial_threshold
-        
+
         if not np.any(initial_mask):
             return self._empty_result()
-        
+
         # Multi-planar analysis
         z_coords, y_coords, x_coords = np.where(initial_mask)
-        
+
         # Analyze extent in each plane
         z_extent = np.max(z_coords) - np.min(z_coords)
         y_extent = np.max(y_coords) - np.min(y_coords)
         x_extent = np.max(x_coords) - np.min(x_coords)
-        
-        # Use initial threshold directly - anything above 2000 HU is metal
-        refined_mask = initial_mask
-        slice_thresholds = [initial_threshold]
+
+        # STAR PROFILE ENHANCEMENT: Per-slice adaptive thresholding
+        if use_star_profiles:
+            refined_mask = np.zeros_like(initial_mask, dtype=bool)
+            slice_thresholds = []
+
+            # Find center of initial detection for star profile analysis
+            center_z = int(np.mean(z_coords))
+            center_y = int(np.mean(y_coords))
+            center_x = int(np.mean(x_coords))
+
+            # Create temporary ROI bounds for star profile calculation
+            temp_roi = {
+                'y_min': max(0, center_y - 100),
+                'y_max': min(ct_volume.shape[1], center_y + 100),
+                'x_min': max(0, center_x - 100),
+                'x_max': min(ct_volume.shape[2], center_x + 100)
+            }
+
+            # Process slices with detected metal
+            for z in np.unique(z_coords):
+                slice_mask = initial_mask[z]
+                if not np.any(slice_mask):
+                    continue
+
+                # Find center of metal on this slice
+                y_indices, x_indices = np.where(slice_mask)
+                slice_center_y = int(np.mean(y_indices))
+                slice_center_x = int(np.mean(x_indices))
+
+                # Calculate star profile threshold for this slice
+                slice_threshold = self._calculate_star_threshold(
+                    ct_volume[z], slice_center_y, slice_center_x,
+                    temp_roi, fw_percentage
+                )
+
+                if slice_threshold is not None and slice_threshold > 0:
+                    # Apply adaptive threshold to this slice
+                    refined_mask[z] = ct_volume[z] > slice_threshold
+                    slice_thresholds.append(slice_threshold)
+                else:
+                    # Fallback to initial threshold
+                    refined_mask[z] = slice_mask
+                    slice_thresholds.append(initial_threshold)
+
+            # If no valid thresholds were calculated, fall back to initial detection
+            if not np.any(refined_mask):
+                refined_mask = initial_mask
+                slice_thresholds = [initial_threshold]
+        else:
+            # Use initial threshold directly - anything above 2500 HU is metal
+            refined_mask = initial_mask
+            slice_thresholds = [initial_threshold]
 
         # Create individual ROIs for components
         labeled, num_components = label(refined_mask)
@@ -510,18 +565,84 @@ class MetalDetector:
     
     def _calculate_star_threshold(self, slice_data: np.ndarray, center_y: int, center_x: int,
                                  roi_bounds: Dict, fw_percentage: float) -> Optional[float]:
-        """Calculate threshold using star profile analysis."""
-        # Simplified star profile calculation
-        # In production, this would use the full star profile algorithm
-        roi_data = slice_data[
-            roi_bounds.get('y_min', 0):roi_bounds.get('y_max', slice_data.shape[0]),
-            roi_bounds.get('x_min', 0):roi_bounds.get('x_max', slice_data.shape[1])
+        """
+        Calculate threshold using FULL star profile analysis.
+
+        This is the recovered FW75% algorithm that:
+        1. Shoots 16 radial lines from center to ROI boundaries
+        2. Finds peak HU value along each line
+        3. Calculates FW% threshold for each profile
+        4. Returns average threshold across all profiles
+
+        Args:
+            slice_data: 2D CT slice
+            center_y, center_x: Metal center coordinates
+            roi_bounds: ROI boundaries
+            fw_percentage: Full Width percentage (typically 75%)
+
+        Returns:
+            Average threshold across all star profiles, or None if calculation fails
+        """
+        from skimage.draw import line
+
+        y_min, y_max = roi_bounds.get('y_min', 0), roi_bounds.get('y_max', slice_data.shape[0])
+        x_min, x_max = roi_bounds.get('x_min', 0), roi_bounds.get('x_max', slice_data.shape[1])
+
+        # Calculate intermediate points for 16-point star
+        y_mid = (y_min + y_max) // 2
+        x_mid = (x_min + x_max) // 2
+
+        y_q1 = (y_min + y_mid) // 2
+        y_q3 = (y_mid + y_max) // 2
+        x_q1 = (x_min + x_mid) // 2
+        x_q3 = (x_mid + x_max) // 2
+
+        # Define 16 endpoints (same as visualization)
+        endpoints = [
+            # Cardinals (N, S, E, W)
+            (y_min, x_mid), (y_max, x_mid), (y_mid, x_max), (y_mid, x_min),
+            # Primary diagonals
+            (y_min, x_min), (y_min, x_max), (y_max, x_min), (y_max, x_max),
+            # Secondary points
+            (y_min, x_q1), (y_min, x_q3),
+            (y_max, x_q1), (y_max, x_q3),
+            (y_q1, x_min), (y_q3, x_min),
+            (y_q1, x_max), (y_q3, x_max)
         ]
-        
-        if roi_data.size > 0:
-            max_val = np.max(roi_data)
-            threshold = max_val * (fw_percentage / 100.0)
-            return threshold
+
+        thresholds = []
+
+        for end_y, end_x in endpoints:
+            # Ensure endpoints are within bounds
+            end_y = max(0, min(slice_data.shape[0] - 1, end_y))
+            end_x = max(0, min(slice_data.shape[1] - 1, end_x))
+
+            # Get line coordinates
+            rr, cc = line(center_y, center_x, end_y, end_x)
+
+            # Ensure coordinates are within image bounds
+            valid_mask = (rr >= 0) & (rr < slice_data.shape[0]) & (cc >= 0) & (cc < slice_data.shape[1])
+            rr = rr[valid_mask]
+            cc = cc[valid_mask]
+
+            if len(rr) == 0:
+                continue
+
+            # Get HU values along this profile
+            hu_values = slice_data[rr, cc]
+
+            # Find peak HU value along this line
+            peak_hu = np.max(hu_values)
+
+            # Calculate FW% threshold for this profile
+            profile_threshold = peak_hu * (fw_percentage / 100.0)
+            thresholds.append(profile_threshold)
+
+        # Return average threshold across all profiles
+        if thresholds:
+            avg_threshold = np.mean(thresholds)
+            return avg_threshold
+
         return None
     
     def _calculate_fw75_threshold(self, slice_data: np.ndarray, center_y: int, center_x: int,
