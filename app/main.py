@@ -214,6 +214,8 @@ with st.sidebar:
 
         else:
             # Legacy parameters
+            use_star_profiles = False  # Legacy method doesn't use star profiles
+
             roi_margin_cm = st.slider(
                 "ROI Margin (cm)",
                 min_value=1.0,
@@ -222,7 +224,7 @@ with st.sidebar:
                 step=0.5,
                 help="Margin around detected metal in centimeters"
             )
-            
+
             # Metal Detection Threshold Slider
             min_metal_hu = st.slider(
                 "Initial Metal Threshold (HU)",
@@ -1079,15 +1081,36 @@ if st.session_state.ct_volume is not None:
                 # Show detected thresholds
                 st.markdown("**Adaptive Thresholds**")
                 threshold = st.session_state.metal_detection_result.get('threshold', None)
-                
+
                 if threshold:
                     st.text(f"Metal: >{threshold:.0f} HU")
                 else:
                     st.text("Metal: Default thresholds")
-                
-                st.text(f"Bright: {bright_low} - {bright_high} HU")
-                st.text(f"Dark: < {dark_high} HU")
-                st.text(f"Bone: {bone_low} - {bone_high} HU")
+
+                # Get threshold values from session state (avoid undefined variable errors)
+                if 'russian_doll' in st.session_state.thresholds:
+                    bright_low_val = st.session_state.thresholds['russian_doll'].get('bright_min', 800)
+                    bright_high_val = st.session_state.thresholds['russian_doll'].get('bright_max', 3500)
+                    dark_high_val = st.session_state.thresholds['russian_doll'].get('dark_max', -150)
+                    bone_low_val = st.session_state.thresholds['russian_doll'].get('bone_min', 150)
+                    bone_high_val = st.session_state.thresholds['russian_doll'].get('bone_max', 1500)
+                elif 'legacy' in st.session_state.thresholds:
+                    bright_low_val = st.session_state.thresholds['legacy'].get('bright_min', 500)
+                    bright_high_val = st.session_state.thresholds['legacy'].get('bright_max', 3000)
+                    dark_high_val = st.session_state.thresholds['legacy'].get('dark_max', -150)
+                    bone_low_val = st.session_state.thresholds['legacy'].get('bone_min', 150)
+                    bone_high_val = st.session_state.thresholds['legacy'].get('bone_max', 1500)
+                else:
+                    # Default values
+                    bright_low_val = 800
+                    bright_high_val = 3500
+                    dark_high_val = -150
+                    bone_low_val = 150
+                    bone_high_val = 1500
+
+                st.text(f"Bright: {bright_low_val} - {bright_high_val} HU")
+                st.text(f"Dark: < {dark_high_val} HU")
+                st.text(f"Bone: {bone_low_val} - {bone_high_val} HU")
             
             # Display pixel counts
             if st.session_state.masks:
