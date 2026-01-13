@@ -285,7 +285,7 @@ with st.sidebar:
             st.info("🧠 Uses distance-based analysis for fast bone/artifact discrimination")
 
         elif segmentation_method == "Russian Doll with Star Profile Discrimination (Best Accuracy - Recovered)":
-            st.info("🌟 Uses 16-point radial HU profile analysis for physics-based discrimination")
+            st.info("🌟 Uses radial HU profile analysis for physics-based discrimination")
             st.success("✨ Recovered algorithm: Analyzes peak width, smoothness, and gradient characteristics")
             
             # Dark Artifacts Range Slider
@@ -360,7 +360,29 @@ with st.sidebar:
                 help=ThresholdConfig.MAX_ARTIFACT_DISTANCE.help_text
             )
             st.session_state.thresholds['russian_doll']['max_distance'] = artifact_distance_cm
-            
+
+            # Star Profile Angular Resolution
+            st.markdown("**Star Profile Configuration**")
+            num_star_angles = st.slider(
+                "Number of Radial Profile Angles",
+                min_value=8,
+                max_value=64,
+                value=32,
+                step=8,
+                help="""Number of radial lines sampled from metal center.
+                More angles = better directional accuracy but slightly slower.
+                - 8: Fast, coarse (±22.5° error)
+                - 16: Good balance (±11.25° error)
+                - 32: High accuracy (±5.6° error) - Recommended
+                - 64: Maximum precision (±2.8° error)
+
+                Processing time increases linearly with angle count.
+                32 angles recommended for best accuracy/speed trade-off.""",
+                key="num_star_angles_slider"
+            )
+
+            st.caption(f"📐 Angular resolution: {360/num_star_angles:.2f}° spacing, ±{360/(2*num_star_angles):.2f}° max error")
+
             # Validation feedback
             is_valid, errors = validate_all_thresholds()
             if not is_valid:
@@ -897,7 +919,7 @@ if st.session_state.ct_volume is not None:
                                         metal_mask,
                                         bright_mask,
                                         spacing,
-                                        num_angles=16
+                                        num_angles=num_star_angles  # Use slider value (default: 32)
                                     )
 
                                     # Store masks
