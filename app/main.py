@@ -285,8 +285,9 @@ with st.sidebar:
             st.info("🧠 Uses distance-based analysis for fast bone/artifact discrimination")
 
         elif segmentation_method == "Russian Doll with Star Profile Discrimination (Best Accuracy - Recovered)":
-            st.info("🌟 Uses radial HU profile analysis for physics-based discrimination")
-            st.success("✨ Recovered algorithm: Analyzes peak width, smoothness, and gradient characteristics")
+            st.info("🌟 Hybrid: Star profile analysis + HU range constraints")
+            st.success("✨ Bone must satisfy BOTH: (1) Profile characteristics AND (2) HU in bone range")
+            st.caption("Profile analyzes: peak width, smoothness, gradient | Then filters by HU range")
             
             # Dark Artifacts Range Slider
             st.markdown("**Dark Artifacts (Beam Hardening)**")
@@ -922,10 +923,29 @@ if st.session_state.ct_volume is not None:
                                         num_angles=num_star_angles  # Use slider value (default: 32)
                                     )
 
+                                    # HYBRID APPROACH: Apply HU constraints to star profile results
+                                    # Bone must satisfy BOTH conditions:
+                                    # 1. Star profile says bone (bone_score > 0)
+                                    # 2. HU value is in bone range [bone_low, bone_high]
+
+                                    profile_bone_mask = disc_result['bone_mask']
+                                    hu_bone_range = (st.session_state.ct_volume >= bone_low) & \
+                                                    (st.session_state.ct_volume <= bone_high)
+
+                                    # Refined bone mask: profile AND HU criteria
+                                    bone_mask_refined = profile_bone_mask & hu_bone_range
+
+                                    # Voxels that profile said "bone" but are outside bone HU range
+                                    # → Reclassify as artifacts
+                                    reclassified_to_artifact = profile_bone_mask & ~hu_bone_range
+
+                                    # Final artifact mask: original artifacts + reclassified
+                                    artifact_mask_refined = disc_result['artifact_mask'] | reclassified_to_artifact
+
                                     # Store masks
                                     st.session_state.masks['dark_artifacts'] = dark_mask
-                                    st.session_state.masks['bone'] = disc_result['bone_mask']
-                                    st.session_state.masks['bright_artifacts'] = disc_result['artifact_mask']
+                                    st.session_state.masks['bone'] = bone_mask_refined
+                                    st.session_state.masks['bright_artifacts'] = artifact_mask_refined
 
                                     # Store discrimination metadata
                                     if 'segmentation_info' not in st.session_state:
@@ -935,22 +955,33 @@ if st.session_state.ct_volume is not None:
 
                                     segmentation_result = {
                                         'dark_artifacts': dark_mask,
-                                        'bone': disc_result['bone_mask'],
-                                        'bright_artifacts': disc_result['artifact_mask'],
+                                        'bone': bone_mask_refined,
+                                        'bright_artifacts': artifact_mask_refined,
                                         'confidence_map': disc_result['confidence_map']
                                     }
 
-                                    st.success("Star profile discrimination complete!")
+                                    st.success("Star profile discrimination complete! (Hybrid: Profile + HU)")
 
                                     # Show statistics with comparison
-                                    bone_voxels = np.sum(disc_result['bone_mask'])
-                                    artifact_voxels = np.sum(disc_result['artifact_mask'])
+                                    # Profile-only results (before HU constraint)
+                                    profile_bone_count = np.sum(profile_bone_mask)
+                                    profile_artifact_count = np.sum(disc_result['artifact_mask'])
+
+                                    # Final results (after HU constraint)
+                                    bone_voxels = np.sum(bone_mask_refined)
+                                    artifact_voxels = np.sum(artifact_mask_refined)
+                                    reclassified_count = np.sum(reclassified_to_artifact)
                                     total_bright = bone_voxels + artifact_voxels
 
                                     if total_bright > 0:
                                         st.info(f"📊 Classified {total_bright:,} bright voxels:")
                                         st.info(f"  • Bone: {bone_voxels:,} ({100*bone_voxels/total_bright:.1f}%)")
                                         st.info(f"  • Artifacts: {artifact_voxels:,} ({100*artifact_voxels/total_bright:.1f}%)")
+
+                                        # Show HU constraint impact
+                                        if reclassified_count > 0:
+                                            st.warning(f"⚠️ HU Constraint: {reclassified_count:,} voxels reclassified from bone to artifact (outside HU range [{bone_low}-{bone_high}])")
+                                            st.caption(f"Profile-only would have classified: Bone={profile_bone_count:,}, Artifacts={profile_artifact_count:,}")
 
                                         # Show confidence stats
                                         conf_mean = np.mean(disc_result['confidence_map'][bright_mask]) if np.any(bright_mask) else 0
