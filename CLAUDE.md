@@ -2,6 +2,37 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+---
+
+## CURRENT WORK STATUS (feature/star-profile-recovery branch)
+
+### Outstanding Issue: HU Range Sliders Non-Functional
+
+**Problem**: When using "Russian Doll with Star Profile Discrimination", the bone HU range sliders (`bone_low`, `bone_high`) have NO effect on segmentation results.
+
+**Root Cause**: Star profile discrimination (`app/core/discrimination.py:351-625`) uses ONLY profile characteristics (peak width, smoothness, gradient) and ignores the HU range parameters.
+
+**Fix Options**:
+- **Option A (Hybrid)**: `bone = (bone_score > 0) AND (bone_low <= HU <= bone_high)`
+- **Option B (Weighted)**: Add HU as 4th feature in bone_score calculation
+- **Option C (Two-stage)**: HU filter first, then profile analysis
+
+**Key Files**:
+- UI sliders: `app/main.py:~350-360`
+- Discrimination call: `app/main.py:~900-920`
+- Star profile logic: `app/core/discrimination.py:351-625`
+
+**Workaround**: Use "Russian Doll with Distance-Based Discrimination" if HU control is needed.
+
+### What's Working
+- Full FW75% star profile metal detection (`app/core/metal_detection.py:511-591`)
+- Per-slice adaptive thresholding (`app/core/metal_detection.py:216-267`)
+- 32-angle configurable star profiles
+- ROI bounds and body mask constraints
+- Profile-based discrimination (just needs HU integration)
+
+---
+
 ## Project Overview
 
 This is a medical imaging research project focused on characterizing metal artifacts in CT scans of patients with hip implants. The project has been refactored from Jupyter notebooks into a Streamlit web application for better usability and deployment.
@@ -9,23 +40,21 @@ This is a medical imaging research project focused on characterizing metal artif
 ## Project Structure
 
 ```
-├── app/                    # Application source code
-│   ├── main.py            # Streamlit web application
-│   ├── dicom_utils.py     # DICOM loading and RTSTRUCT handling
-│   ├── dicom_export.py    # DICOM RT Structure export functionality
-│   ├── metal_detection.py # Legacy metal detection algorithms
-│   ├── metal_detection_v3.py # Advanced 3D adaptive metal detection
+├── app/                       # Application source code
+│   ├── main.py               # Streamlit web application
+│   ├── dicom_utils.py        # DICOM loading and RTSTRUCT handling
+│   ├── dicom_export.py       # DICOM RT Structure export
 │   ├── contour_operations.py # Boolean operations and mask refinement
-│   ├── artifact_discrimination.py # Star profile-based bone/artifact discrimination
-│   └── visualization.py    # Visualization and plotting functions
-├── data/                   # Patient DICOM data
-│   ├── HIP* Patient/      # Patient datasets with CT and RTSTRUCT files
-├── archive/                # Original Jupyter notebooks (archived)
-├── output/                 # Generated masks and exports
-├── misc/                   # Screenshots and test outputs
-├── requirements.txt        # Python dependencies
-├── run.sh                 # Launch script for deployment
-└── README.md              # User documentation
+│   ├── visualization.py      # Visualization and plotting
+│   └── core/                  # Core algorithms
+│       ├── metal_detection.py   # Metal detection (3D adaptive + star profiles)
+│       └── discrimination.py    # Bone/artifact discrimination
+├── data/                      # Patient DICOM data (HIP* Patient folders)
+├── output/                    # Generated masks and exports
+├── requirements.txt           # Python dependencies
+├── run.sh                     # Launch script
+├── CLAUDE.md                  # THIS FILE - read by Claude at session start
+└── README.md                  # User documentation
 ```
 
 ## Key Architecture & Concepts
@@ -86,14 +115,13 @@ streamlit run app/main.py --server.address localhost --server.port 8501
 ## Code Standards
 
 ### Module Organization
+- `main.py`: Streamlit UI and workflow coordination
 - `dicom_utils.py`: DICOM I/O operations, HU conversion
 - `dicom_export.py`: DICOM RT Structure Set creation
-- `metal_detection.py`: Legacy metal detection with initial thresholds
-- `metal_detection_v3.py`: 3D adaptive metal detection with star profiles
 - `contour_operations.py`: Boolean operations, mask refinement, Russian doll segmentation
-- `artifact_discrimination.py`: Star profile-based bone vs artifact discrimination
 - `visualization.py`: Plotting, overlays, and multi-slice views
-- `main.py`: Streamlit UI and workflow coordination
+- `core/metal_detection.py`: 3D adaptive metal detection with star profiles
+- `core/discrimination.py`: Star profile-based bone vs artifact discrimination
 
 ### Error Handling
 - Graceful handling of missing DICOM files
@@ -131,14 +159,12 @@ The application is configured to run on:
 
 ## Testing Commands
 
-When testing or debugging metal detection:
 ```bash
-# Test metal detection algorithms
-python3 app/metal_detection_v3.py
+# Run the Streamlit app
+cd app && streamlit run main.py
 
-# Lint and typecheck (if available)
-npm run lint
-npm run typecheck
+# Test star profile detection (load patient, enable star profiles, run detection)
+# Test discrimination (select "Russian Doll with Star Profile Discrimination")
 ```
 
 ## Key Algorithms
