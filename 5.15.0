@@ -1,7 +1,0 @@
-Requirement already satisfied: nibabel in c:\users\david\appdata\local\packages\pythonsoftwarefoundation.python.3.11_qbz5n2kfra8p0\localcache\local-packages\python311\site-packages (5.3.3)
-Requirement already satisfied: plotly in c:\users\david\appdata\local\packages\pythonsoftwarefoundation.python.3.11_qbz5n2kfra8p0\localcache\local-packages\python311\site-packages (6.5.2)
-Requirement already satisfied: importlib-resources>=5.12 in c:\users\david\appdata\local\packages\pythonsoftwarefoundation.python.3.11_qbz5n2kfra8p0\localcache\local-packages\python311\site-packages (from nibabel) (6.5.2)
-Requirement already satisfied: numpy>=1.22 in c:\users\david\appdata\local\packages\pythonsoftwarefoundation.python.3.11_qbz5n2kfra8p0\localcache\local-packages\python311\site-packages (from nibabel) (1.26.4)
-Requirement already satisfied: packaging>=20 in c:\users\david\appdata\local\packages\pythonsoftwarefoundation.python.3.11_qbz5n2kfra8p0\localcache\local-packages\python311\site-packages (from nibabel) (23.2)
-Requirement already satisfied: typing-extensions>=4.6 in c:\users\david\appdata\local\packages\pythonsoftwarefoundation.python.3.11_qbz5n2kfra8p0\localcache\local-packages\python311\site-packages (from nibabel) (4.15.0)
-Requirement already satisfied: narwhals>=1.15.1 in c:\users\david\appdata\local\packages\pythonsoftwarefoundation.python.3.11_qbz5n2kfra8p0\localcache\local-packages\python311\site-packages (from plotly) (2.15.0)
