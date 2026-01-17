@@ -216,7 +216,7 @@ class MetalDetector:
         # STAR PROFILE ENHANCEMENT: Per-slice adaptive thresholding
         if use_star_profiles:
             refined_mask = np.zeros_like(initial_mask, dtype=bool)
-            slice_thresholds = []
+            slice_thresholds = {}  # Dict mapping slice index -> threshold
 
             # Find center of initial detection for star profile analysis
             center_z = int(np.mean(z_coords))
@@ -251,20 +251,20 @@ class MetalDetector:
                 if slice_threshold is not None and slice_threshold > 0:
                     # Apply adaptive threshold to this slice
                     refined_mask[z] = ct_volume[z] > slice_threshold
-                    slice_thresholds.append(slice_threshold)
+                    slice_thresholds[z] = slice_threshold
                 else:
                     # Fallback to initial threshold
                     refined_mask[z] = slice_mask
-                    slice_thresholds.append(initial_threshold)
+                    slice_thresholds[z] = initial_threshold
 
             # If no valid thresholds were calculated, fall back to initial detection
             if not np.any(refined_mask):
                 refined_mask = initial_mask
-                slice_thresholds = [initial_threshold]
+                slice_thresholds = {0: initial_threshold}  # Fallback dict
         else:
             # Use initial threshold directly - anything above 2500 HU is metal
             refined_mask = initial_mask
-            slice_thresholds = [initial_threshold]
+            slice_thresholds = {0: initial_threshold}  # Fallback dict
 
         # Create individual ROIs for components
         labeled, num_components = label(refined_mask)
@@ -460,7 +460,7 @@ class MetalDetector:
                     individual_regions[z] = [conservative_region.copy()]
         
         # Calculate average threshold
-        avg_threshold = np.mean(slice_thresholds) if slice_thresholds else initial_threshold
+        avg_threshold = np.mean(list(slice_thresholds.values())) if slice_thresholds else initial_threshold
         
         return {
             'mask': filled_metal_mask,  # Return filled mask instead of original
@@ -634,14 +634,18 @@ class MetalDetector:
             # Find peak HU value along this line
             peak_hu = np.max(hu_values)
 
-            # Calculate FW% threshold for this profile
-            profile_threshold = peak_hu * (fw_percentage / 100.0)
-            thresholds.append(profile_threshold)
+            # Only include this line if it actually hit metal (peak > 2500 HU)
+            # This prevents lines hitting bone/tissue from dragging threshold down
+            if peak_hu > 2500:
+                # Calculate FW% threshold for this profile
+                profile_threshold = peak_hu * (fw_percentage / 100.0)
+                thresholds.append(profile_threshold)
 
-        # Return average threshold across all profiles
+        # Return minimum threshold across all valid profiles
+        # Using minimum ensures we capture all metal (most inclusive)
         if thresholds:
-            avg_threshold = np.mean(thresholds)
-            return avg_threshold
+            min_threshold = np.min(thresholds)
+            return min_threshold
 
         return None
     

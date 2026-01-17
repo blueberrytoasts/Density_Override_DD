@@ -308,9 +308,10 @@ with st.sidebar:
             
             # Use star profile calculated thresholds if available
             if 'metal_detection_result' in st.session_state and st.session_state.metal_detection_result:
-                if 'threshold_evolution' in st.session_state.metal_detection_result:
-                    # Get the final threshold from star profile
-                    final_threshold = st.session_state.metal_detection_result['threshold_evolution'][-1]
+                threshold_dict = st.session_state.metal_detection_result.get('threshold_evolution', {})
+                if threshold_dict:
+                    # Get the final threshold from star profile (highest slice index)
+                    final_threshold = threshold_dict[max(threshold_dict.keys())]
                     # Use bright artifact range that extends up to metal threshold
                     # Everything below metal threshold could be bright artifacts
                     bright_default_min = 800  # Fixed lower bound for bright artifacts
@@ -396,11 +397,12 @@ with st.sidebar:
             
             # Use star profile calculated thresholds if available
             if 'metal_detection_result' in st.session_state and st.session_state.metal_detection_result:
-                if 'threshold_evolution' in st.session_state.metal_detection_result:
-                    # Get the final threshold from star profile
-                    final_threshold = st.session_state.metal_detection_result['threshold_evolution'][-1]
+                threshold_dict = st.session_state.metal_detection_result.get('threshold_evolution', {})
+                if threshold_dict:
+                    # Get the final threshold from star profile (highest slice index)
+                    final_threshold = threshold_dict[max(threshold_dict.keys())]
                     st.info(f"📊 Using star profile calculated metal threshold: {final_threshold:.0f} HU")
-                    
+
                     # Calculate bright artifact range based on 75% of metal threshold
                     default_bright_min = int(final_threshold * 0.75)  # 75% of metal threshold
                     default_bright_max = int(final_threshold - 500)   # Just below metal
@@ -1121,10 +1123,18 @@ if st.session_state.ct_volume is not None:
             if st.session_state.metal_detection_result:
                 # Show detected thresholds
                 st.markdown("**Adaptive Thresholds**")
-                threshold = st.session_state.metal_detection_result.get('threshold', None)
 
-                if threshold:
-                    st.text(f"Metal: >{threshold:.0f} HU")
+                # Get per-slice threshold if available (now a dict: slice_index -> threshold)
+                slice_thresholds = st.session_state.metal_detection_result.get('threshold_evolution', {})
+                avg_threshold = st.session_state.metal_detection_result.get('threshold', None)
+
+                if slice_thresholds and current_slice in slice_thresholds:
+                    slice_threshold = slice_thresholds[current_slice]
+                    st.text(f"Metal (this slice): >{slice_threshold:.0f} HU")
+                    if avg_threshold:
+                        st.text(f"Metal (avg all slices): >{avg_threshold:.0f} HU")
+                elif avg_threshold:
+                    st.text(f"Metal: >{avg_threshold:.0f} HU (no metal on this slice)")
                 else:
                     st.text("Metal: Default thresholds")
 
@@ -1295,10 +1305,13 @@ if st.session_state.ct_volume is not None:
             
             # Show threshold evolution
             if st.checkbox("Show Threshold Evolution Across Slices"):
-                threshold_data = result.get('threshold_evolution', result.get('slice_thresholds', []))
+                threshold_data = result.get('threshold_evolution', {})
                 if threshold_data:
                     # Create simple threshold display
                     st.metric("Detection Threshold", f"{result.get('threshold', 'N/A'):.0f} HU")
+                    # Show per-slice breakdown
+                    st.text(f"Slices with metal: {len(threshold_data)}")
+                    st.text(f"Threshold range: {min(threshold_data.values()):.0f} - {max(threshold_data.values()):.0f} HU")
                 else:
                     st.info("No threshold evolution data available")
             
