@@ -6,22 +6,8 @@ import nibabel as nib
 import time
 
 from dicom_utils import load_dicom_series_to_hu, create_metal_mask_from_rtstruct
-# Legacy functions moved inline to fix import errors
 from core.metal_detection import MetalDetector, MetalDetectionMethod
 from core.discrimination import ArtifactDiscriminator, DiscriminationMethod
-
-# Legacy wrapper functions
-def detect_metal_volume(ct_volume, spacing, margin_cm=2.0, fw_percentage=75.0, 
-                       min_metal_hu=2500, dilation_iterations=2):
-    """Legacy wrapper for metal detection."""
-    detector = MetalDetector(MetalDetectionMethod.LEGACY)
-    return detector.detect(
-        ct_volume, spacing,
-        min_metal_hu=min_metal_hu,
-        margin_cm=margin_cm,
-        fw_percentage=fw_percentage,
-        dilation_iterations=dilation_iterations
-    )
 
 def create_affine_from_dicom_meta(metadata):
     """Create affine transformation matrix from DICOM metadata."""
@@ -45,8 +31,8 @@ def save_mask_as_nifti(mask, affine, filepath):
 from contour_operations import (create_bright_artifact_mask, create_dark_artifact_mask,
                                create_bone_mask, save_all_contours_as_nifti, refine_mask,
                                create_russian_doll_segmentation, create_sequential_masks)
-from visualization import (create_overlay_image, create_histogram, fig_to_base64, 
-                          create_multi_slice_view, visualize_star_profiles,
+from visualization import (create_overlay_image, create_histogram, fig_to_base64,
+                          fig_to_png_bytes, create_multi_slice_view, visualize_star_profiles,
                           plot_threshold_evolution, visualize_discrimination_slice,
                           create_histogram_with_thresholds, create_threshold_preview)
 from config import ThresholdConfig, init_threshold_state, reset_thresholds, validate_all_thresholds
@@ -168,110 +154,61 @@ with st.sidebar:
     analysis_tab1, analysis_tab2 = st.tabs(["Metal Detection", "Artifact Thresholds"])
     
     with analysis_tab1:
-        st.markdown("**Advanced Metal Detection**")
-        st.info("💡 3D adaptive method combines coronal/sagittal analysis with star profile algorithm")
-        
-        detection_method = st.radio(
-            "Detection Method",
-            ["3D Adaptive + Star Algorithm (Recommended)", "Legacy with Initial Threshold"],
-            help="3D Adaptive: Combines 3D coronal/sagittal analysis with star profile algorithm. Legacy: Uses initial HU threshold."
+        st.markdown("**3D Adaptive Metal Detection**")
+        st.info("💡 Combines coronal/sagittal analysis with star profile algorithm for optimal metal boundary detection")
+
+        margin_cm = st.slider(
+            "3D Search Margin (cm)",
+            min_value=1.0,
+            max_value=5.0,
+            value=2.0,
+            step=0.5,
+            help="Margin around detected metal extent in all planes"
         )
-        
-        if detection_method == "3D Adaptive + Star Algorithm (Recommended)":
-            margin_cm = st.slider(
-                "3D Search Margin (cm)",
-                min_value=1.0,
-                max_value=5.0,
-                value=2.0,
-                step=0.5,
-                help="Margin around detected metal extent in all planes"
-            )
-            
-            fw_percentage = st.slider(
-                "Full Width Percentage",
-                min_value=50,
-                max_value=90,
-                value=75,
-                step=5,
-                help="Percentage of peak for threshold detection (lower = more inclusive)"
-            )
-            
-            intensity_percentile = st.slider(
-                "Initial Detection Percentile",
-                min_value=99.0,
-                max_value=99.9,
-                value=99.5,
-                step=0.1,
-                help="Top percentile of voxels to use for initial detection"
-            )
 
-            # Star Profile Enhancement Toggle
-            use_star_profiles = st.checkbox(
-                "🌟 Enable Per-Slice Star Profile Analysis (Recovered Algorithm)",
-                value=True,
-                help="Uses 16-point radial sampling to calculate adaptive threshold for each slice. Provides 15-30% better accuracy with directional adaptation."
-            )
+        fw_percentage = st.slider(
+            "Full Width Percentage",
+            min_value=50,
+            max_value=90,
+            value=75,
+            step=5,
+            help="Percentage of peak for threshold detection (lower = more inclusive)"
+        )
 
-        else:
-            # Legacy parameters
-            use_star_profiles = False  # Legacy method doesn't use star profiles
+        intensity_percentile = st.slider(
+            "Initial Detection Percentile",
+            min_value=99.0,
+            max_value=99.9,
+            value=99.5,
+            step=0.1,
+            help="Top percentile of voxels to use for initial detection"
+        )
 
-            roi_margin_cm = st.slider(
-                "ROI Margin (cm)",
-                min_value=1.0,
-                max_value=10.0,
-                value=5.0,
-                step=0.5,
-                help="Margin around detected metal in centimeters"
-            )
-
-            # Metal Detection Threshold Slider
-            min_metal_hu = st.slider(
-                "Initial Metal Threshold (HU)",
-                min_value=int(ThresholdConfig.METAL_THRESHOLD.min_bound),
-                max_value=int(ThresholdConfig.METAL_THRESHOLD.max_bound),
-                value=int(st.session_state.thresholds['metal_detection']['metal_threshold']),
-                step=int(ThresholdConfig.METAL_THRESHOLD.step),
-                help=ThresholdConfig.METAL_THRESHOLD.help_text,
-                key="metal_threshold_slider"
-            )
-            st.session_state.thresholds['metal_detection']['metal_threshold'] = min_metal_hu
-            
-            fw_percentage = st.slider(
-                "Full Width Percentage",
-                min_value=50,
-                max_value=90,
-                value=60,
-                step=5,
-                help="Percentage of peak for threshold detection"
-            )
-            
-            dilation_iterations = st.slider(
-                "Metal Region Connection",
-                min_value=1,
-                max_value=10,
-                value=5,
-                help="Dilation iterations to connect nearby metal regions"
-            )
+        # Star Profile Enhancement Toggle
+        use_star_profiles = st.checkbox(
+            "🌟 Enable Per-Slice Star Profile Analysis",
+            value=True,
+            help="Uses 16-point radial sampling to calculate adaptive threshold for each slice. Provides 15-30% better accuracy with directional adaptation."
+        )
     
     with analysis_tab2:
         st.markdown("**Artifact Segmentation Method**")
         
         segmentation_method = st.radio(
             "Segmentation Approach",
-            ["Russian Doll with Smart Discrimination (Fast)",
-             "Russian Doll with Star Profile Discrimination (Best Accuracy - Recovered)",
+            ["Russian Doll with Distance-Based Discrimination",
+             "Russian Doll with Star Profile Discrimination",
              "Context-Aware Artifact Detection (Best for Low HU Artifacts)",
              "Legacy Threshold-Based"],
             help="""
-            - Smart: Fast distance-based discrimination
-            - Star Profile: Analyzes radial HU profiles for physics-based discrimination (20-30% better accuracy)
+            - Distance-Based: Uses 3D distance from metal + local variance for bone/artifact discrimination
+            - Star Profile: Fast per-pixel radial profile analysis with HU scoring for bone/tissue/artifact classification
             - Context-Aware: Detects artifacts based on tissue context (catches 100-800 HU artifacts)
             - Legacy: Simple threshold-based for comparison
             """
         )
         
-        # Add reset button
+        # Add reset button and GPU toggle
         col_reset1, col_reset2 = st.columns([1, 2])
         with col_reset1:
             if st.button("🔄 Reset to Defaults", help="Reset all thresholds to default values"):
@@ -280,13 +217,81 @@ with st.sidebar:
                 else:
                     reset_thresholds('russian_doll')
                 st.rerun()
-        
-        if segmentation_method == "Russian Doll with Smart Discrimination (Fast)":
-            st.info("🧠 Uses distance-based analysis for fast bone/artifact discrimination")
 
-        elif segmentation_method == "Russian Doll with Star Profile Discrimination (Best Accuracy - Recovered)":
-            st.info("🌟 Uses radial HU profile analysis for physics-based discrimination")
-            st.success("✨ Recovered algorithm: Analyzes peak width, smoothness, and gradient characteristics")
+        # GPU acceleration toggle
+        from core.gpu_utils import is_gpu_available, GPU_AVAILABLE
+        if GPU_AVAILABLE:
+            use_gpu = st.checkbox("🚀 Use GPU Acceleration", value=True,
+                                  help="Use NVIDIA GPU for faster processing (CuPy detected)")
+            if use_gpu:
+                st.caption("✅ GPU acceleration enabled")
+        else:
+            use_gpu = False
+            st.caption("💻 CPU mode (install CuPy for GPU acceleration)")
+
+        if segmentation_method == "Russian Doll with Distance-Based Discrimination":
+            st.info("🧠 Uses 3D distance transforms + local variance for bone/artifact discrimination")
+
+            # Dark Artifacts Range Slider
+            st.markdown("**Dark Artifacts (Beam Hardening)**")
+            dark_range_dist = st.slider(
+                "Dark Artifact HU Range",
+                min_value=int(ThresholdConfig.DARK_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.DARK_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds['russian_doll']['dark_min']),
+                       int(st.session_state.thresholds['russian_doll']['dark_max'])),
+                step=int(ThresholdConfig.DARK_ARTIFACTS.step),
+                help=ThresholdConfig.DARK_ARTIFACTS.help_text,
+                key="dark_range_slider_dist"
+            )
+            st.session_state.thresholds['russian_doll']['dark_min'] = dark_range_dist[0]
+            st.session_state.thresholds['russian_doll']['dark_max'] = dark_range_dist[1]
+
+            # Bright Artifacts Range Slider
+            st.markdown("**Bright Artifacts (Metal-induced)**")
+            bright_range_dist = st.slider(
+                "Bright Artifacts HU Range",
+                min_value=int(ThresholdConfig.RUSSIAN_DOLL_BRIGHT_ARTIFACTS.min_bound),
+                max_value=int(ThresholdConfig.RUSSIAN_DOLL_BRIGHT_ARTIFACTS.max_bound),
+                value=(int(st.session_state.thresholds['russian_doll']['bright_min']),
+                       int(st.session_state.thresholds['russian_doll']['bright_max'])),
+                step=int(ThresholdConfig.RUSSIAN_DOLL_BRIGHT_ARTIFACTS.step),
+                help=ThresholdConfig.RUSSIAN_DOLL_BRIGHT_ARTIFACTS.help_text,
+                key="bright_range_slider_dist"
+            )
+            st.session_state.thresholds['russian_doll']['bright_min'] = bright_range_dist[0]
+            st.session_state.thresholds['russian_doll']['bright_max'] = bright_range_dist[1]
+
+            # Bone Tissue Range Slider
+            st.markdown("**Bone Tissue**")
+            bone_range_dist = st.slider(
+                "Bone HU Range",
+                min_value=int(ThresholdConfig.RUSSIAN_DOLL_BONE.min_bound),
+                max_value=int(ThresholdConfig.RUSSIAN_DOLL_BONE.max_bound),
+                value=(int(st.session_state.thresholds['russian_doll']['bone_min']),
+                       int(st.session_state.thresholds['russian_doll']['bone_max'])),
+                step=int(ThresholdConfig.RUSSIAN_DOLL_BONE.step),
+                help=ThresholdConfig.RUSSIAN_DOLL_BONE.help_text,
+                key="bone_range_slider_dist"
+            )
+            st.session_state.thresholds['russian_doll']['bone_min'] = bone_range_dist[0]
+            st.session_state.thresholds['russian_doll']['bone_max'] = bone_range_dist[1]
+
+            # Distance from Metal
+            artifact_distance_dist = st.slider(
+                "Max Artifact Distance from Metal (cm)",
+                min_value=ThresholdConfig.MAX_ARTIFACT_DISTANCE.min_bound,
+                max_value=ThresholdConfig.MAX_ARTIFACT_DISTANCE.max_bound,
+                value=st.session_state.thresholds['russian_doll']['max_distance'],
+                step=ThresholdConfig.MAX_ARTIFACT_DISTANCE.step,
+                help=ThresholdConfig.MAX_ARTIFACT_DISTANCE.help_text,
+                key="artifact_distance_slider_dist"
+            )
+            st.session_state.thresholds['russian_doll']['max_distance'] = artifact_distance_dist
+
+        elif segmentation_method == "Russian Doll with Star Profile Discrimination":
+            st.info("🌟 Fast per-pixel radial profile analysis for bone/tissue/artifact classification")
+            st.success("✨ Analyzes peak width, smoothness, gradient + HU range scoring")
             
             # Dark Artifacts Range Slider
             st.markdown("**Dark Artifacts (Beam Hardening)**")
@@ -589,17 +594,8 @@ with st.sidebar:
         if 'dark_artifact_tissue' in st.session_state.masks:
             st.session_state.contour_visibility['dark_artifact_tissue'] = st.checkbox(
                 "Dark Artifacts → Tissue", value=st.session_state.contour_visibility.get('dark_artifact_tissue', True), key="vis_dark_tissue")
-        if 'dark_artifact_mixed' in st.session_state.masks:
-            st.session_state.contour_visibility['dark_artifact_mixed'] = st.checkbox(
-                "Dark Artifacts → Mixed", value=st.session_state.contour_visibility.get('dark_artifact_mixed', True), key="vis_dark_mixed")
-
         st.session_state.contour_visibility['bone'] = st.checkbox(
             "Bone", value=st.session_state.contour_visibility['bone'], key="vis_bone")
-
-        # Bright artifact mixed
-        if 'bright_artifact_mixed' in st.session_state.masks:
-            st.session_state.contour_visibility['bright_artifact_mixed'] = st.checkbox(
-                "Bright Artifacts → Mixed", value=st.session_state.contour_visibility.get('bright_artifact_mixed', True), key="vis_bright_mixed")
     
     # Contour name editing
     if st.checkbox("Edit Contour Names"):
@@ -763,54 +759,36 @@ if st.session_state.ct_volume is not None:
                 if st.button("🎯 Detect Metal Automatically", type="primary"):
                     with st.spinner("Detecting metal implant..."):
                         start_time = time.time()
-                        if detection_method == "3D Adaptive + Star Algorithm (Recommended)":
-                            # 3D adaptive method with coronal/sagittal analysis + star profiles
-                            detector = MetalDetector(MetalDetectionMethod.ADAPTIVE_3D)
-                            # Fix spacing to be positive (some DICOM files have negative z-spacing)
-                            spacing = np.abs(st.session_state.ct_metadata['spacing'])
-                            result = detector.detect(
-                                st.session_state.ct_volume,
-                                spacing,
-                                fw_percentage=fw_percentage,
-                                margin_cm=margin_cm,
-                                intensity_percentile=intensity_percentile,
-                                use_star_profiles=use_star_profiles  # Enable/disable star profiles
-                            )
-                            
-                            # roi_bounds is already in the result as roi_bounds
-                        else:
-                            # Legacy method with initial threshold
-                            # Fix spacing to be positive
-                            spacing = np.abs(st.session_state.ct_metadata['spacing'])
-                            result = detect_metal_volume(
-                                st.session_state.ct_volume,
-                                spacing,
-                                margin_cm=roi_margin_cm,
-                                fw_percentage=fw_percentage,
-                                min_metal_hu=min_metal_hu,
-                                dilation_iterations=dilation_iterations
-                            )
-                        
+                        # 3D adaptive method with coronal/sagittal analysis + star profiles
+                        detector = MetalDetector(MetalDetectionMethod.ADAPTIVE_3D)
+                        # Fix spacing to be positive (some DICOM files have negative z-spacing)
+                        spacing = np.abs(st.session_state.ct_metadata['spacing'])
+                        result = detector.detect(
+                            st.session_state.ct_volume,
+                            spacing,
+                            fw_percentage=fw_percentage,
+                            margin_cm=margin_cm,
+                            intensity_percentile=intensity_percentile,
+                            use_star_profiles=use_star_profiles
+                        )
+
                         end_time = time.time()
                         elapsed_time = end_time - start_time
 
                         if result['mask'] is not None and np.any(result['mask']):
                             st.session_state.metal_detection_result = result
                             st.session_state.masks['metal'] = result['mask']
-                            
+
                             metal_count = np.sum(result['mask'])
-                            if detection_method == "3D Adaptive + Star Algorithm (Recommended)":
-                                st.success(f"3D adaptive detection complete! Found {metal_count:,} metal voxels")
-                                if 'analysis' in result and result['analysis']:
-                                    thresh = result['analysis']['threshold_used']
-                                    extent = result['analysis']['extent_voxels']
-                                    st.info(f"Auto-detected threshold: {thresh:.0f} HU")
-                                    st.info(f"3D extent: {extent['z']}×{extent['y']}×{extent['x']} voxels")
-                                if 'individual_regions' in result:
-                                    total_regions = sum(len(regions) for regions in result['individual_regions'].values())
-                                    st.info(f"Created {total_regions} focused ROI regions across {len(result['individual_regions'])} slices")
-                            else:
-                                st.success(f"Legacy detection complete! Found {metal_count:,} metal voxels")
+                            st.success(f"Metal detection complete! Found {metal_count:,} metal voxels")
+                            if 'analysis' in result and result['analysis']:
+                                thresh = result['analysis']['threshold_used']
+                                extent = result['analysis']['extent_voxels']
+                                st.info(f"Auto-detected threshold: {thresh:.0f} HU")
+                                st.info(f"3D extent: {extent['z']}×{extent['y']}×{extent['x']} voxels")
+                            if 'individual_regions' in result:
+                                total_regions = sum(len(regions) for regions in result['individual_regions'].values())
+                                st.info(f"Created {total_regions} focused ROI regions across {len(result['individual_regions'])} slices")
                             st.info(f"⏱️ Metal detection took {elapsed_time:.2f} seconds.")
                         else:
                             st.error("No metal implant detected")
@@ -825,8 +803,20 @@ if st.session_state.ct_volume is not None:
                             roi_bounds = st.session_state.metal_detection_result['roi_bounds']
                             
                             # Get threshold values from session state based on segmentation method
-                            if segmentation_method.startswith("Russian Doll"):
-                                # Advanced/Russian Doll methods
+                            if segmentation_method == "Russian Doll with Star Profile Discrimination" or \
+                               segmentation_method == "Russian Doll with Distance-Based Discrimination":
+                                # Star Profile and Smart methods use russian_doll thresholds
+                                dark_low = st.session_state.thresholds.get('russian_doll', {}).get('dark_min', -1024)
+                                dark_high = st.session_state.thresholds.get('russian_doll', {}).get('dark_max', -150)
+                                bright_low = st.session_state.thresholds.get('russian_doll', {}).get('bright_min', 800)
+                                bright_high = st.session_state.thresholds.get('russian_doll', {}).get('bright_max', 3500)
+                                bone_low = st.session_state.thresholds.get('russian_doll', {}).get('bone_min', 150)
+                                bone_high = st.session_state.thresholds.get('russian_doll', {}).get('bone_max', 1500)
+                                artifact_distance_cm = st.session_state.thresholds.get('russian_doll', {}).get('max_distance', 10.0)
+
+                                print(f"Using russian_doll thresholds - Dark: [{dark_low}, {dark_high}], Bright: [{bright_low}, {bright_high}], Bone: [{bone_low}, {bone_high}]")
+                            elif segmentation_method.startswith("Russian Doll"):
+                                # Other Russian Doll methods (Advanced) use advanced thresholds
                                 dark_low = st.session_state.thresholds.get('advanced', {}).get('dark_min', -1024)
                                 dark_high = st.session_state.thresholds.get('advanced', {}).get('dark_max', -150)
                                 bright_low = st.session_state.thresholds.get('advanced', {}).get('bright_min', 800)
@@ -834,8 +824,8 @@ if st.session_state.ct_volume is not None:
                                 bone_low = st.session_state.thresholds.get('advanced', {}).get('bone_min', 150)
                                 bone_high = st.session_state.thresholds.get('advanced', {}).get('bone_max', 1500)
                                 artifact_distance_cm = st.session_state.thresholds.get('advanced', {}).get('max_distance', 10.0)
-                                
-                                print(f"Using thresholds - Dark: [{dark_low}, {dark_high}], Bright: [{bright_low}, {bright_high}], Bone: [{bone_low}, {bone_high}]")
+
+                                print(f"Using advanced thresholds - Dark: [{dark_low}, {dark_high}], Bright: [{bright_low}, {bright_high}], Bone: [{bone_low}, {bone_high}]")
                             else:
                                 # Legacy method
                                 dark_low = -1024  # Legacy uses fixed lower bound
@@ -846,7 +836,7 @@ if st.session_state.ct_volume is not None:
                                 bone_high = st.session_state.thresholds.get('legacy', {}).get('bone_max', 1500)
                                 artifact_distance_cm = 10.0
                             
-                            if segmentation_method == "Russian Doll with Smart Discrimination (Fast)":
+                            if segmentation_method == "Russian Doll with Distance-Based Discrimination":
                                 # Use the fast distance-based discrimination
                                 with st.spinner("Running smart bone/artifact discrimination..."):
                                     # Fix spacing to be positive
@@ -864,22 +854,23 @@ if st.session_state.ct_volume is not None:
                                         bright_threshold_high=bright_high,
                                         bright_artifact_max_distance_cm=artifact_distance_cm,
                                         use_fast_mode=True,
-                                        use_enhanced_mode=False
+                                        use_enhanced_mode=False,
+                                        use_gpu=use_gpu
                                     )
                                 
                                 # Update masks - including contextual artifact masks
                                 if segmentation_result:
                                     # Store all available masks from segmentation result
                                     mask_names = ['dark_artifacts', 'bone', 'bright_artifacts',
-                                                 'bright_artifact_bone', 'bright_artifact_tissue', 'bright_artifact_mixed',
-                                                 'dark_artifact_bone', 'dark_artifact_tissue', 'dark_artifact_mixed',
+                                                 'bright_artifact_bone', 'bright_artifact_tissue',
+                                                 'dark_artifact_bone', 'dark_artifact_tissue',
                                                  'bright_artifacts_mild', 'bright_artifacts_moderate', 'bright_artifacts_severe']
                                     for mask_name in mask_names:
                                         mask = segmentation_result.get(mask_name)
                                         if mask is not None:
                                             st.session_state.masks[mask_name] = mask.astype(bool) if hasattr(mask, 'astype') else mask
 
-                            elif segmentation_method == "Russian Doll with Star Profile Discrimination (Best Accuracy - Recovered)":
+                            elif segmentation_method == "Russian Doll with Star Profile Discrimination":
                                 # Use the recovered star profile discrimination
                                 with st.spinner("Running star profile bone/artifact discrimination... (may take 10-30 seconds)"):
                                     # Fix spacing to be positive
@@ -921,13 +912,22 @@ if st.session_state.ct_volume is not None:
                                         metal_mask,
                                         bright_mask,
                                         spacing,
-                                        num_angles=num_star_angles  # Use slider value (default: 32)
+                                        num_angles=num_star_angles,  # Use slider value (default: 32)
+                                        bone_hu_low=bone_low,        # Pass HU range for scoring
+                                        bone_hu_high=bone_high,
+                                        use_gpu=use_gpu              # GPU acceleration
                                     )
 
-                                    # Store masks
+                                    # Store masks - including tissue classification
                                     st.session_state.masks['dark_artifacts'] = dark_mask
                                     st.session_state.masks['bone'] = disc_result['bone_mask']
                                     st.session_state.masks['bright_artifacts'] = disc_result['artifact_mask']
+
+                                    # Store artifact tissue breakdown if available
+                                    if 'artifact_bone_mask' in disc_result:
+                                        st.session_state.masks['bright_artifact_bone'] = disc_result['artifact_bone_mask']
+                                    if 'artifact_tissue_mask' in disc_result:
+                                        st.session_state.masks['bright_artifact_tissue'] = disc_result['artifact_tissue_mask']
 
                                     # Store discrimination metadata
                                     if 'segmentation_info' not in st.session_state:
@@ -939,20 +939,25 @@ if st.session_state.ct_volume is not None:
                                         'dark_artifacts': dark_mask,
                                         'bone': disc_result['bone_mask'],
                                         'bright_artifacts': disc_result['artifact_mask'],
+                                        'bright_artifact_bone': disc_result.get('artifact_bone_mask'),
+                                        'bright_artifact_tissue': disc_result.get('artifact_tissue_mask'),
                                         'confidence_map': disc_result['confidence_map']
                                     }
 
                                     st.success("Star profile discrimination complete!")
 
-                                    # Show statistics with comparison
+                                    # Show statistics with tissue breakdown
                                     bone_voxels = np.sum(disc_result['bone_mask'])
-                                    artifact_voxels = np.sum(disc_result['artifact_mask'])
+                                    artifact_bone_voxels = np.sum(disc_result.get('artifact_bone_mask', 0))
+                                    artifact_tissue_voxels = np.sum(disc_result.get('artifact_tissue_mask', 0))
+                                    artifact_voxels = artifact_bone_voxels + artifact_tissue_voxels
                                     total_bright = bone_voxels + artifact_voxels
 
                                     if total_bright > 0:
-                                        st.info(f"📊 Classified {total_bright:,} bright voxels:")
-                                        st.info(f"  • Bone: {bone_voxels:,} ({100*bone_voxels/total_bright:.1f}%)")
-                                        st.info(f"  • Artifacts: {artifact_voxels:,} ({100*artifact_voxels/total_bright:.1f}%)")
+                                        st.info(f"📊 Classified {total_bright:,} bright voxels (using HU range {bone_low}-{bone_high} HU):")
+                                        st.info(f"  • Bone tissue: {bone_voxels:,} ({100*bone_voxels/total_bright:.1f}%)")
+                                        st.info(f"  • Artifacts over bone: {artifact_bone_voxels:,} ({100*artifact_bone_voxels/total_bright:.1f}%)")
+                                        st.info(f"  • Artifacts over tissue: {artifact_tissue_voxels:,} ({100*artifact_tissue_voxels/total_bright:.1f}%)")
 
                                         # Show confidence stats
                                         conf_mean = np.mean(disc_result['confidence_map'][bright_mask]) if np.any(bright_mask) else 0
@@ -978,8 +983,8 @@ if st.session_state.ct_volume is not None:
                                 # Update masks with context-aware results
                                 if segmentation_result:
                                     mask_names = ['dark_artifacts', 'bone', 'bright_artifacts',
-                                                 'bright_artifact_bone', 'bright_artifact_tissue', 'bright_artifact_mixed',
-                                                 'dark_artifact_bone', 'dark_artifact_tissue', 'dark_artifact_mixed',
+                                                 'bright_artifact_bone', 'bright_artifact_tissue',
+                                                 'dark_artifact_bone', 'dark_artifact_tissue',
                                                  'bright_artifacts_mild', 'bright_artifacts_moderate', 'bright_artifacts_severe']
                                     for mask_name in mask_names:
                                         mask = segmentation_result.get(mask_name)
@@ -1107,6 +1112,15 @@ if st.session_state.ct_volume is not None:
                     spacing=st.session_state.ct_metadata['spacing']
                 )
                 st.pyplot(fig)
+                # Export button for overlay image
+                png_bytes = fig_to_png_bytes(fig, dpi=300)
+                patient_name = st.session_state.get('selected_patient', 'patient')
+                st.download_button(
+                    label="Export Overlay as PNG",
+                    data=png_bytes,
+                    file_name=f"{patient_name}_slice_{current_slice}_overlay.png",
+                    mime="image/png"
+                )
                 plt.close()
             else:
                 # Show simple preview
@@ -1115,6 +1129,15 @@ if st.session_state.ct_volume is not None:
                 ax.set_title(f"CT Slice {current_slice}")
                 ax.axis('off')
                 st.pyplot(fig)
+                # Export button for preview image
+                png_bytes = fig_to_png_bytes(fig, dpi=300)
+                patient_name = st.session_state.get('selected_patient', 'patient')
+                st.download_button(
+                    label="Export Preview as PNG",
+                    data=png_bytes,
+                    file_name=f"{patient_name}_slice_{current_slice}_preview.png",
+                    mime="image/png"
+                )
                 plt.close()
         
         with col2:
@@ -1299,6 +1322,15 @@ if st.session_state.ct_volume is not None:
                         thresholds
                     )
                     st.pyplot(fig)
+                    # Export button for star profile visualization
+                    png_bytes = fig_to_png_bytes(fig, dpi=300)
+                    patient_name = st.session_state.get('selected_patient', 'patient')
+                    st.download_button(
+                        label="Export Star Profile as PNG",
+                        data=png_bytes,
+                        file_name=f"{patient_name}_slice_{current_slice}_star_profile.png",
+                        mime="image/png"
+                    )
                     plt.close()
                 else:
                     st.info("Star profile visualization requires individual region detection")
