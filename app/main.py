@@ -176,12 +176,12 @@ with st.sidebar:
         )
 
         intensity_percentile = st.slider(
-            "Initial Detection Percentile",
+            "Initial Detection Percentile (for centroid/ROI)",
             min_value=99.0,
             max_value=99.9,
             value=99.5,
             step=0.1,
-            help="Top percentile of voxels to use for initial detection"
+            help="Used to find approximate metal location before star profile analysis. Determines centroid (star profile origin) and ROI box. Does NOT affect final threshold - that's calculated by FW75%."
         )
 
         # Star Profile Enhancement Toggle
@@ -567,35 +567,53 @@ with st.sidebar:
     
     # Contour visibility toggles
     st.markdown("**Visibility**")
-    col1, col2 = st.columns(2)
-    
+
+    # Primary contours (always visible)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.session_state.contour_visibility['metal'] = st.checkbox(
             "Metal", value=st.session_state.contour_visibility['metal'], key="vis_metal")
-        st.session_state.contour_visibility['bright_artifacts'] = st.checkbox(
-            "Bright Artifacts (Legacy)", value=st.session_state.contour_visibility['bright_artifacts'], key="vis_bright")
-        
-        # Contextual bright artifact controls
-        if 'bright_artifact_bone' in st.session_state.masks:
-            st.session_state.contour_visibility['bright_artifact_bone'] = st.checkbox(
-                "Bright Artifacts → Bone", value=st.session_state.contour_visibility.get('bright_artifact_bone', True), key="vis_bright_bone")
-        if 'bright_artifact_tissue' in st.session_state.masks:
-            st.session_state.contour_visibility['bright_artifact_tissue'] = st.checkbox(
-                "Bright Artifacts → Tissue", value=st.session_state.contour_visibility.get('bright_artifact_tissue', True), key="vis_bright_tissue")
-    
     with col2:
-        st.session_state.contour_visibility['dark_artifacts'] = st.checkbox(
-            "Dark Artifacts", value=st.session_state.contour_visibility['dark_artifacts'], key="vis_dark")
-
-        # Dark artifact contextual classifications
-        if 'dark_artifact_bone' in st.session_state.masks:
-            st.session_state.contour_visibility['dark_artifact_bone'] = st.checkbox(
-                "Dark Artifacts → Bone", value=st.session_state.contour_visibility.get('dark_artifact_bone', True), key="vis_dark_bone")
-        if 'dark_artifact_tissue' in st.session_state.masks:
-            st.session_state.contour_visibility['dark_artifact_tissue'] = st.checkbox(
-                "Dark Artifacts → Tissue", value=st.session_state.contour_visibility.get('dark_artifact_tissue', True), key="vis_dark_tissue")
         st.session_state.contour_visibility['bone'] = st.checkbox(
             "Bone", value=st.session_state.contour_visibility['bone'], key="vis_bone")
+    with col3:
+        # Legacy bright artifacts - only show if that specific mask exists
+        if 'bright_artifacts' in st.session_state.masks:
+            st.session_state.contour_visibility['bright_artifacts'] = st.checkbox(
+                "Bright (Legacy)", value=st.session_state.contour_visibility['bright_artifacts'], key="vis_bright")
+
+    # Contextual artifact classifications (show when masks exist)
+    has_contextual = any(k in st.session_state.masks for k in [
+        'bright_artifact_bone', 'bright_artifact_tissue',
+        'dark_artifact_bone', 'dark_artifact_tissue'
+    ])
+
+    if has_contextual:
+        st.markdown("**Artifact Classifications**")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.caption("Bright Artifacts")
+            if 'bright_artifact_bone' in st.session_state.masks:
+                st.session_state.contour_visibility['bright_artifact_bone'] = st.checkbox(
+                    "→ Over Bone", value=st.session_state.contour_visibility.get('bright_artifact_bone', True), key="vis_bright_bone")
+            if 'bright_artifact_tissue' in st.session_state.masks:
+                st.session_state.contour_visibility['bright_artifact_tissue'] = st.checkbox(
+                    "→ Over Tissue", value=st.session_state.contour_visibility.get('bright_artifact_tissue', True), key="vis_bright_tissue")
+
+        with col2:
+            st.caption("Dark Artifacts")
+            if 'dark_artifact_bone' in st.session_state.masks:
+                st.session_state.contour_visibility['dark_artifact_bone'] = st.checkbox(
+                    "→ Over Bone", value=st.session_state.contour_visibility.get('dark_artifact_bone', True), key="vis_dark_bone")
+            if 'dark_artifact_tissue' in st.session_state.masks:
+                st.session_state.contour_visibility['dark_artifact_tissue'] = st.checkbox(
+                    "→ Over Tissue", value=st.session_state.contour_visibility.get('dark_artifact_tissue', True), key="vis_dark_tissue")
+
+    # Legacy dark artifacts - only show if mask exists
+    if 'dark_artifacts' in st.session_state.masks:
+        st.session_state.contour_visibility['dark_artifacts'] = st.checkbox(
+            "Dark Artifacts (Legacy)", value=st.session_state.contour_visibility['dark_artifacts'], key="vis_dark")
     
     # Contour name editing
     if st.checkbox("Edit Contour Names"):
@@ -1285,10 +1303,10 @@ if st.session_state.ct_volume is not None:
                 current_slice = st.session_state.current_slice
                 
                 # Check if we have individual regions for this slice
-                if ('individual_regions' in result and 
+                if ('individual_regions' in result and
                     current_slice in result['individual_regions'] and
                     result['individual_regions'][current_slice]):
-                    
+
                     # Use the first component's bounds for this slice
                     component = result['individual_regions'][current_slice][0]
                     roi_bounds_2d = {
@@ -1299,21 +1317,21 @@ if st.session_state.ct_volume is not None:
                     }
                     center_y = component['center_y']
                     center_x = component['center_x']
-                    
+
                     # Generate star profiles for visualization
                     from core.metal_detection import get_star_profile_lines
-                    
+
                     profiles = get_star_profile_lines(
                         st.session_state.ct_volume[current_slice],
                         center_y,
                         center_x,
                         roi_bounds_2d
                     )
-                    
+
                     # Get threshold for visualization
                     threshold = result.get('threshold', 2500)
                     thresholds = (threshold * 0.75, threshold)  # Use 75% and 100% for visualization
-                    
+
                     fig = visualize_star_profiles(
                         st.session_state.ct_volume[current_slice],
                         profiles,

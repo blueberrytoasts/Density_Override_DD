@@ -113,25 +113,56 @@ class MetalDetector:
                 'x_max': min(ct_volume.shape[2], center_x + 100)
             }
 
-            # Process slices with detected metal
+            # Process slices with detected metal - handle multiple components (bilateral)
+            from scipy.ndimage import label as scipy_label_slice
+
             for z in np.unique(z_coords):
                 slice_mask = initial_mask[z]
                 if not np.any(slice_mask):
                     continue
 
-                # Find center of metal on this slice
-                y_indices, x_indices = np.where(slice_mask)
-                slice_center_y = int(np.mean(y_indices))
-                slice_center_x = int(np.mean(x_indices))
-
-                # Calculate star profile threshold for this slice
-                slice_threshold = self._calculate_star_threshold(
-                    ct_volume[z], slice_center_y, slice_center_x,
-                    temp_roi, fw_percentage
+                # Find connected components on this slice (handles bilateral implants)
+                slice_components, n_components = scipy_label_slice(
+                    slice_mask,
+                    structure=np.array([[0,1,0],[1,1,1],[0,1,0]])  # 4-connectivity
                 )
 
-                if slice_threshold is not None and slice_threshold > 0:
-                    # Apply adaptive threshold to this slice
+                component_thresholds = []
+
+                # Process each component separately
+                for comp_id in range(1, n_components + 1):
+                    component_mask = slice_components == comp_id
+                    comp_size = np.sum(component_mask)
+
+                    # Skip tiny components (noise)
+                    if comp_size < 10:
+                        continue
+
+                    # Find center of THIS component
+                    y_indices, x_indices = np.where(component_mask)
+                    comp_center_y = int(np.mean(y_indices))
+                    comp_center_x = int(np.mean(x_indices))
+
+                    # Create ROI for this component
+                    comp_roi = {
+                        'y_min': max(0, comp_center_y - 100),
+                        'y_max': min(ct_volume.shape[1], comp_center_y + 100),
+                        'x_min': max(0, comp_center_x - 100),
+                        'x_max': min(ct_volume.shape[2], comp_center_x + 100)
+                    }
+
+                    # Calculate star profile threshold for this component
+                    comp_threshold = self._calculate_star_threshold(
+                        ct_volume[z], comp_center_y, comp_center_x,
+                        comp_roi, fw_percentage
+                    )
+
+                    if comp_threshold is not None and comp_threshold > 0:
+                        component_thresholds.append(comp_threshold)
+
+                # Use minimum threshold across all components (most inclusive)
+                if component_thresholds:
+                    slice_threshold = min(component_thresholds)
                     refined_mask[z] = ct_volume[z] > slice_threshold
                     slice_thresholds[z] = slice_threshold
                 else:
@@ -336,7 +367,7 @@ class MetalDetector:
                     'center_y': int(np.mean(y_coords_roi_filled)),
                     'center_x': int(np.mean(x_coords_roi_filled))
                 }
-                
+
                 individual_regions = {}
                 for z in valid_z_slices_filled:
                     individual_regions[z] = [conservative_region.copy()]
@@ -470,6 +501,11 @@ class MetalDetector:
         y_min, y_max = roi_bounds.get('y_min', 0), roi_bounds.get('y_max', slice_data.shape[0])
         x_min, x_max = roi_bounds.get('x_min', 0), roi_bounds.get('x_max', slice_data.shape[1])
 
+        # Adaptive metal filter: 50% of max HU in slice
+        # This replaces hardcoded 2500 HU and adapts to any metal type
+        max_slice_hu = np.max(slice_data)
+        metal_filter_threshold = max_slice_hu * 0.5
+
         # Calculate intermediate points for 16-point star
         y_mid = (y_min + y_max) // 2
         x_mid = (x_min + x_max) // 2
@@ -516,9 +552,10 @@ class MetalDetector:
             # Find peak HU value along this line
             peak_hu = np.max(hu_values)
 
-            # Only include this line if it actually hit metal (peak > 2500 HU)
-            # This prevents lines hitting bone/tissue from dragging threshold down
-            if peak_hu > 2500:
+            # Only include this line if it actually hit metal
+            # Uses adaptive threshold (50% of max HU) instead of hardcoded value
+            # This generalizes to any metal type (titanium, steel, tantalum, etc.)
+            if peak_hu > metal_filter_threshold:
                 # Calculate FW% threshold for this profile
                 profile_threshold = peak_hu * (fw_percentage / 100.0)
                 thresholds.append(profile_threshold)
@@ -530,25 +567,7 @@ class MetalDetector:
             return min_threshold
 
         return None
-    
-    def _calculate_fw75_threshold(self, slice_data: np.ndarray, center_y: int, center_x: int,
-                                 fw_percentage: float) -> Optional[float]:
-        """Calculate Full Width at X% Maximum threshold."""
-        # Sample around the center point
-        window_size = 20
-        y_min = max(0, center_y - window_size)
-        y_max = min(slice_data.shape[0], center_y + window_size)
-        x_min = max(0, center_x - window_size)
-        x_max = min(slice_data.shape[1], center_x + window_size)
-        
-        local_region = slice_data[y_min:y_max, x_min:x_max]
-        
-        if local_region.size > 0:
-            max_val = np.max(local_region)
-            threshold = max_val * (fw_percentage / 100.0)
-            return threshold
-        return None
-    
+
     def _fill_metal_holes(self, metal_mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Fill holes in metal mask to capture hollow implants (like hip prostheses).
@@ -641,10 +660,3 @@ def get_star_profile_lines(slice_2d: np.ndarray, center_y: int, center_x: int, b
         profiles.append((distances, hu_values))
     
     return profiles
-
-
-# Convenience function for direct access
-def detect_metal_adaptive_3d(ct_volume: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
-    """Adaptive 3D metal detection with star profiles."""
-    detector = MetalDetector(MetalDetectionMethod.ADAPTIVE_3D)
-    return detector.detect(ct_volume, spacing, **kwargs)

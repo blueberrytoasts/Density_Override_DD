@@ -201,15 +201,6 @@ def fig_to_png_bytes(fig, dpi=300):
     return buf.getvalue()
 
 
-def create_slice_preview(ct_slice, slice_index):
-    """Create a simple preview of a CT slice."""
-    fig = plt.figure(figsize=(6, 6))
-    plt.imshow(ct_slice, cmap='gray', vmin=-150, vmax=250)
-    plt.title(f"CT Slice {slice_index}")
-    plt.axis('off')
-    return fig
-
-
 def visualize_star_profiles(ct_slice, profiles, center_coords, roi_bounds, thresholds=None):
     """
     Visualize the star profile lines on the CT slice and HU vs distance curves.
@@ -487,90 +478,6 @@ def visualize_discrimination_slice(ct_slice, bone_mask, artifact_mask, confidenc
         ax.text(0.5, 0.5, 'No discrimination performed', 
                 ha='center', va='center', transform=ax.transAxes)
         ax.set_title('Discrimination Confidence')
-    ax.axis('off')
-    
-    plt.tight_layout()
-    return fig
-
-
-def visualize_edge_analysis(ct_slice, edge_features, slice_idx):
-    """
-    Visualize the edge-based analysis features for enhanced discrimination.
-    
-    Args:
-        ct_slice: 2D CT slice
-        edge_features: Dictionary containing edge analysis results:
-            - coherence_map: Edge coherence scores
-            - grad_mag: Gradient magnitude
-            - sharp_edges: Sharp edge locations
-            - radial_alignment: Radial alignment scores
-            - persistent_edges: Multi-scale persistent edges
-            - continuity_score: 3D continuity scores
-        slice_idx: Slice index
-        
-    Returns:
-        matplotlib figure
-    """
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    
-    # Original CT slice
-    ax = axes[0, 0]
-    ax.imshow(ct_slice, cmap='gray', vmin=-150, vmax=250)
-    ax.set_title(f'CT Slice {slice_idx}')
-    ax.axis('off')
-    
-    # Edge coherence
-    ax = axes[0, 1]
-    if 'coherence_map' in edge_features and np.any(edge_features['coherence_map'] > 0):
-        im = ax.imshow(edge_features['coherence_map'], cmap='jet', vmin=0, vmax=1)
-        ax.set_title('Edge Coherence\n(High=Bone-like)')
-        plt.colorbar(im, ax=ax, fraction=0.046)
-    else:
-        ax.text(0.5, 0.5, 'No coherence data', ha='center', va='center', transform=ax.transAxes)
-        ax.set_title('Edge Coherence')
-    ax.axis('off')
-    
-    # Gradient magnitude
-    ax = axes[0, 2]
-    if 'grad_mag' in edge_features:
-        im = ax.imshow(edge_features['grad_mag'], cmap='hot')
-        ax.set_title('Gradient Magnitude\n(Edge Strength)')
-        plt.colorbar(im, ax=ax, fraction=0.046)
-    else:
-        ax.text(0.5, 0.5, 'No gradient data', ha='center', va='center', transform=ax.transAxes)
-        ax.set_title('Gradient Magnitude')
-    ax.axis('off')
-    
-    # Sharp edges
-    ax = axes[1, 0]
-    if 'sharp_edges' in edge_features:
-        ax.imshow(edge_features['sharp_edges'], cmap='binary')
-        ax.set_title('Sharp Edges\n(Bone Characteristic)')
-    else:
-        ax.text(0.5, 0.5, 'No sharp edge data', ha='center', va='center', transform=ax.transAxes)
-        ax.set_title('Sharp Edges')
-    ax.axis('off')
-    
-    # Radial alignment
-    ax = axes[1, 1]
-    if 'radial_alignment' in edge_features and np.any(edge_features['radial_alignment'] > 0):
-        im = ax.imshow(edge_features['radial_alignment'], cmap='RdYlBu_r', vmin=0, vmax=1)
-        ax.set_title('Radial Alignment\n(High=Artifact-like)')
-        plt.colorbar(im, ax=ax, fraction=0.046)
-    else:
-        ax.text(0.5, 0.5, 'No radial data', ha='center', va='center', transform=ax.transAxes)
-        ax.set_title('Radial Alignment')
-    ax.axis('off')
-    
-    # 3D continuity
-    ax = axes[1, 2]
-    if 'continuity_score' in edge_features and np.any(edge_features['continuity_score'] > 0):
-        im = ax.imshow(edge_features['continuity_score'], cmap='viridis', vmin=0, vmax=1)
-        ax.set_title('3D Continuity\n(High=Bone-like)')
-        plt.colorbar(im, ax=ax, fraction=0.046)
-    else:
-        ax.text(0.5, 0.5, 'No continuity data', ha='center', va='center', transform=ax.transAxes)
-        ax.set_title('3D Continuity')
     ax.axis('off')
     
     plt.tight_layout()
