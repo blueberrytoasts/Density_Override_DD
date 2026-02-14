@@ -32,25 +32,25 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
     ax.set_title(title)
     ax.axis('off')
 
-    # Add 1cm scale bar if spacing is provided
-    if spacing is not None:
-        # spacing is (z, y, x) in mm/pixel. Use y for row spacing.
-        pixel_spacing_y = spacing[1]
-        scale_bar_length_pixels = 10 / pixel_spacing_y # 10mm = 1cm
-        
-        # Position in the bottom-left area.
-        # Y position is for the text, to have the bar above it.
-        y_pos = ct_slice.shape[0] * 0.85
-        x_pos = ct_slice.shape[1] * 0.1
-        
-        # Draw the text "1 cm"
-        ax.text(x_pos + scale_bar_length_pixels / 2, y_pos, '1 cm', color='white', 
-                ha='center', va='center', fontsize=10)
-        
-        # Draw the scale bar above the text
-        bar_y_pos = y_pos + 10
-        bar_height = 4
-        ax.add_patch(Rectangle((x_pos, bar_y_pos), scale_bar_length_pixels, bar_height, color='white'))
+    # Scale bar disabled for now
+    # if spacing is not None:
+    #     # spacing is (z, y, x) in mm/pixel. Use y for row spacing.
+    #     pixel_spacing_y = spacing[1]
+    #     scale_bar_length_pixels = 10 / pixel_spacing_y # 10mm = 1cm
+    #
+    #     # Position in the bottom-left area.
+    #     # Y position is for the text, to have the bar above it.
+    #     y_pos = ct_slice.shape[0] * 0.85
+    #     x_pos = ct_slice.shape[1] * 0.1
+    #
+    #     # Draw the text "1 cm"
+    #     ax.text(x_pos + scale_bar_length_pixels / 2, y_pos, '1 cm', color='white',
+    #             ha='center', va='center', fontsize=10)
+    #
+    #     # Draw the scale bar above the text
+    #     bar_y_pos = y_pos + 10
+    #     bar_height = 4
+    #     ax.add_patch(Rectangle((x_pos, bar_y_pos), scale_bar_length_pixels, bar_height, color='white'))
 
     # Define colors for each category - high contrast for visibility
     colors = {
@@ -58,14 +58,12 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
         'bright_artifacts': (1.0, 1.0, 0.0, 0.8),         # Bright Yellow (legacy/general)
         'bright_artifact_bone': (1.0, 0.5, 0.0, 0.8),     # Bright Orange (bright artifacts over bone)
         'bright_artifact_tissue': (0.0, 1.0, 0.0, 0.8),   # Bright Green (bright artifacts over tissue)
-        'bright_artifact_mixed': (0.0, 0.0, 0.5, 0.8),    # Navy Blue (mixed/uncertain)
         'bright_artifacts_mild': (0.5, 1.0, 0.5, 0.8),    # Light Green (mild elevation)
         'bright_artifacts_moderate': (1.0, 1.0, 0.0, 0.8), # Bright Yellow (moderate elevation)
         'bright_artifacts_severe': (1.0, 0.5, 0.0, 0.8),  # Orange-Red (severe elevation)
         'dark_artifacts': (1.0, 0.0, 1.0, 0.8),           # Bright Magenta (legacy/general)
         'dark_artifact_bone': (0.8, 0.0, 0.8, 0.8),       # Dark Magenta (dark artifacts over bone)
         'dark_artifact_tissue': (1.0, 0.4, 1.0, 0.8),     # Light Magenta (dark artifacts over tissue)
-        'dark_artifact_mixed': (0.5, 0.0, 0.5, 0.8),      # Purple (mixed/uncertain)
         'bone': (0.0, 0.8, 1.0, 0.8)                      # Bright Cyan (distinct from others)
     }
     
@@ -117,14 +115,12 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
             'bright_artifacts': 'Bright Artifacts (Legacy)',
             'bright_artifact_bone': 'Bright Artifacts → Bone',
             'bright_artifact_tissue': 'Bright Artifacts → Tissue',
-            'bright_artifact_mixed': 'Bright Artifacts → Mixed',
             'bright_artifacts_mild': 'Bright Artifacts (Mild)',
-            'bright_artifacts_moderate': 'Bright Artifacts (Moderate)', 
+            'bright_artifacts_moderate': 'Bright Artifacts (Moderate)',
             'bright_artifacts_severe': 'Bright Artifacts (Severe)',
             'dark_artifacts': 'Dark Artifacts (Legacy)',
             'dark_artifact_bone': 'Dark Artifacts → Bone',
             'dark_artifact_tissue': 'Dark Artifacts → Tissue',
-            'dark_artifact_mixed': 'Dark Artifacts → Mixed',
             'bone': 'Bone'
         }
     
@@ -185,6 +181,24 @@ def fig_to_base64(fig):
     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
     plt.close(fig)
     return img_base64
+
+
+def fig_to_png_bytes(fig, dpi=300):
+    """
+    Convert matplotlib figure to PNG bytes for high-quality export.
+
+    Args:
+        fig: matplotlib figure object
+        dpi: resolution for export (default 300 for publication quality)
+
+    Returns:
+        bytes: PNG image data
+    """
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight',
+                facecolor='white', edgecolor='none')
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def create_slice_preview(ct_slice, slice_index):

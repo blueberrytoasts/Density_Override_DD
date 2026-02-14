@@ -1,6 +1,7 @@
 """
 Unified Artifact Discrimination Module
 Consolidates all bone/artifact discrimination algorithms into a single interface.
+Supports GPU acceleration via CuPy when available.
 """
 
 import numpy as np
@@ -8,6 +9,13 @@ from typing import Dict, Tuple, Optional
 from enum import Enum
 from scipy.ndimage import distance_transform_edt, gaussian_filter, sobel
 from scipy.ndimage import binary_opening, binary_closing, label
+
+# Import GPU utilities
+from core.gpu_utils import (
+    is_gpu_available, distance_transform_edt_gpu, gaussian_filter_gpu,
+    calculate_local_variance_gpu, batch_neighborhood_analysis_gpu,
+    GPU_AVAILABLE
+)
 
 
 class DiscriminationMethod(Enum):
@@ -71,93 +79,142 @@ class ArtifactDiscriminator:
     
     def _discriminate_distance(self, ct_volume: np.ndarray, metal_mask: np.ndarray,
                               bright_mask: np.ndarray, spacing: Tuple[float, float, float],
-                              max_distance_cm: float = 10.0) -> Dict:
+                              max_distance_cm: float = 10.0,
+                              bone_hu_low: float = 150.0,
+                              bone_hu_high: float = 1500.0,
+                              tissue_hu_low: float = -100.0,
+                              tissue_hu_high: float = 300.0,
+                              use_gpu: bool = True) -> Dict:
         """
-        Fast distance-based discrimination.
-        
+        Distance-based discrimination with configurable HU thresholds.
+        Supports GPU acceleration when CuPy is available.
+
         Principle: Bright artifacts are typically closer to metal than bone.
-        
+
         Algorithm:
-        1. Calculate distance from metal
-        2. Apply distance-based classification
-        3. Use local smoothness as secondary criterion
+        1. Calculate distance from metal (GPU accelerated)
+        2. Apply distance-based classification using user-specified HU ranges
+        3. Use local smoothness as secondary criterion (GPU accelerated)
+        4. Classify artifacts as overlying bone or tissue (GPU batch processing)
+
+        Args:
+            max_distance_cm: Maximum distance from metal to consider
+            bone_hu_low: Lower bound of bone HU range (from slider)
+            bone_hu_high: Upper bound of bone HU range (from slider)
+            tissue_hu_low: Lower bound of soft tissue HU range
+            tissue_hu_high: Upper bound of soft tissue HU range
+            use_gpu: Whether to use GPU acceleration if available
         """
-        # Calculate distance from metal
+        # Calculate distance from metal (GPU accelerated)
         inverted_metal = np.logical_not(metal_mask)
-        distances = distance_transform_edt(inverted_metal, sampling=spacing)
+        distances = distance_transform_edt_gpu(inverted_metal, spacing, use_gpu=use_gpu)
         distances_cm = distances / 10.0
-        
-        # Smooth CT for texture analysis
-        smoothed = gaussian_filter(ct_volume.astype(float), sigma=2.0)
-        
-        # Calculate local variance
-        local_variance = np.zeros_like(ct_volume, dtype=float)
-        for z in range(1, ct_volume.shape[0]-1):
-            slice_std = np.std([ct_volume[z-1], ct_volume[z], ct_volume[z+1]], axis=0)
-            local_variance[z] = slice_std
-        
+
+        # Calculate local variance (GPU accelerated)
+        local_variance = calculate_local_variance_gpu(ct_volume, use_gpu=use_gpu)
+
         # Classification based on distance and smoothness
         bone_mask = np.zeros_like(bright_mask)
-        artifact_mask = np.zeros_like(bright_mask)
+        artifact_bone_mask = np.zeros_like(bright_mask)
+        artifact_tissue_mask = np.zeros_like(bright_mask)
         confidence_map = np.zeros_like(ct_volume, dtype=float)
-        
-        # More relaxed bone criteria - bone is typically:
-        # - At moderate distance from metal (not too close, not too far)
-        # - Has moderate HU values (400-1500)
+
+        # Bone criteria using user-specified HU range:
+        # - At moderate distance from metal (not too close)
+        # - Has HU values within user-specified bone range
         # - Has relatively low variance (smooth structure)
         bone_criteria = bright_mask & \
                        (distances_cm > 1.0) & \
-                       (ct_volume >= 400) & (ct_volume <= 1500) & \
-                       (local_variance < 300)  # Increased variance threshold
-        
-        # Artifact characteristics: very close to metal OR high variance OR very high HU
+                       (ct_volume >= bone_hu_low) & (ct_volume <= bone_hu_high) & \
+                       (local_variance < 300)
+
+        # Artifact characteristics: very close to metal OR high variance OR outside bone HU range
         artifact_criteria = bright_mask & \
                           ((distances_cm < 1.0) |  # Very close to metal
                            (local_variance > 400) |  # High variance
-                           (ct_volume > 1500))  # Very high HU (likely artifact)
-        
+                           (ct_volume > bone_hu_high))  # Above bone range (likely artifact)
+
         bone_mask = bone_criteria
-        artifact_mask = artifact_criteria & (~bone_mask)
-        
-        # Handle unclassified regions with better heuristics
-        unclassified = bright_mask & (~bone_mask) & (~artifact_mask)
+        artifact_mask_temp = artifact_criteria & (~bone_mask)
+
+        # Handle unclassified regions
+        unclassified = bright_mask & (~bone_mask) & (~artifact_mask_temp)
         if np.any(unclassified):
             # Use HU value as primary criterion for unclassified
-            # Bone is typically 400-1000 HU, artifacts can be higher
-            bone_hu_range = unclassified & (ct_volume >= 400) & (ct_volume <= 1000)
-            artifact_hu_range = unclassified & (ct_volume > 1000)
-            
+            # Use middle of bone range as typical bone
+            bone_mid = (bone_hu_low + bone_hu_high) / 2
+            bone_hu_range = unclassified & (ct_volume >= bone_hu_low) & (ct_volume <= bone_mid)
+            artifact_hu_range = unclassified & (ct_volume > bone_mid)
+
             # Secondary criterion: distance
-            # Very close = artifact, moderate distance = bone
             very_close = unclassified & (distances_cm < 0.5)
             moderate_dist = unclassified & (distances_cm >= 0.5) & (distances_cm < 3.0)
-            
+
             # Combine criteria
             bone_mask |= (bone_hu_range & moderate_dist)
-            artifact_mask |= (artifact_hu_range | very_close)
-            
+            artifact_mask_temp |= (artifact_hu_range | very_close)
+
             # Remaining unclassified: use distance threshold
-            still_unclassified = unclassified & (~bone_mask) & (~artifact_mask)
+            still_unclassified = unclassified & (~bone_mask) & (~artifact_mask_temp)
             near_metal = still_unclassified & (distances_cm < 2.0)
             far_from_metal = still_unclassified & (distances_cm >= 2.0)
-            artifact_mask |= near_metal
+            artifact_mask_temp |= near_metal
             bone_mask |= far_from_metal
-        
+
+        # Now classify artifacts as overlying bone or tissue based on neighborhood
+        # Use GPU batch processing for speed
+        artifact_coords = np.where(artifact_mask_temp)
+        n_artifacts = len(artifact_coords[0])
+
+        if n_artifacts > 0:
+            # Batch neighborhood analysis (GPU accelerated)
+            bone_ratios, tissue_ratios = batch_neighborhood_analysis_gpu(
+                ct_volume, artifact_coords,
+                bone_hu_low, bone_hu_high,
+                tissue_hu_low, tissue_hu_high,
+                window_size=5, use_gpu=use_gpu
+            )
+
+            # Classify based on ratios
+            for i in range(n_artifacts):
+                z, y, x = artifact_coords[0][i], artifact_coords[1][i], artifact_coords[2][i]
+
+                if bone_ratios[i] > tissue_ratios[i]:
+                    artifact_bone_mask[z, y, x] = True
+                elif tissue_ratios[i] > bone_ratios[i]:
+                    artifact_tissue_mask[z, y, x] = True
+                else:
+                    # Tie: use distance
+                    if distances_cm[z, y, x] < 1.5:
+                        artifact_tissue_mask[z, y, x] = True
+                    else:
+                        artifact_bone_mask[z, y, x] = True
+
+        # Combined artifact mask for backward compatibility
+        artifact_mask = artifact_bone_mask | artifact_tissue_mask
+
         # Calculate confidence based on distance and variance
         confidence_map[bright_mask] = np.clip(
             1.0 - (local_variance[bright_mask] / 500.0), 0, 1
         )
-        
+
         return {
             'bone_mask': bone_mask,
             'artifact_mask': artifact_mask,
+            'artifact_bone_mask': artifact_bone_mask,
+            'artifact_tissue_mask': artifact_tissue_mask,
             'confidence_map': confidence_map,
             'distance_map': distances_cm,
             'method': 'distance_based',
             'metadata': {
                 'max_distance_cm': max_distance_cm,
+                'bone_hu_low': bone_hu_low,
+                'bone_hu_high': bone_hu_high,
                 'bone_voxels': np.sum(bone_mask),
-                'artifact_voxels': np.sum(artifact_mask)
+                'artifact_bone_voxels': np.sum(artifact_bone_mask),
+                'artifact_tissue_voxels': np.sum(artifact_tissue_mask),
+                'artifact_voxels': np.sum(artifact_mask),
+                'gpu_used': use_gpu and GPU_AVAILABLE
             }
         }
     
@@ -350,33 +407,51 @@ class ArtifactDiscriminator:
     
     def _discriminate_star_profile(self, ct_volume: np.ndarray, metal_mask: np.ndarray,
                                    bright_mask: np.ndarray, spacing: Tuple[float, float, float],
-                                   num_angles: int = 16) -> Dict:
+                                   num_angles: int = 16,
+                                   bone_hu_low: float = 150.0,
+                                   bone_hu_high: float = 1500.0,
+                                   tissue_hu_low: float = -100.0,
+                                   tissue_hu_high: float = 300.0,
+                                   use_gpu: bool = True) -> Dict:
         """
-        Star profile-based discrimination (RECOVERED ALGORITHM).
+        Star profile-based discrimination with tissue classification.
+        Supports GPU acceleration for distance transform and neighborhood analysis.
 
-        Principle: Analyzes radial HU profiles to distinguish bone from artifacts.
+        Principle: Analyzes radial HU profiles to distinguish bone from artifacts,
+        then further classifies artifacts as overlying bone or soft tissue.
 
         Bone characteristics:
         - Broad peaks (3-5mm width)
         - Smooth transitions (low gradient variance)
         - Consistent across angles (low directional variance)
         - Gradual gradients
+        - HU values within typical bone range (uses bone_hu_low/bone_hu_high)
 
         Artifact characteristics:
         - Narrow peaks (<2mm width)
         - Sharp edges (high gradient variance)
         - Variable across angles (high directional variance)
         - Steep gradients
+        - HU values often outside typical bone range
 
         Args:
             num_angles: Number of radial profiles to analyze (default: 16)
+            bone_hu_low: Lower bound of expected bone HU range (default: 150)
+            bone_hu_high: Upper bound of expected bone HU range (default: 1500)
+            tissue_hu_low: Lower bound of soft tissue HU range (default: -100)
+            tissue_hu_high: Upper bound of soft tissue HU range (default: 300)
         """
         from scipy.ndimage import gaussian_filter1d
         from skimage.draw import line
 
         bone_mask = np.zeros_like(bright_mask)
-        artifact_mask = np.zeros_like(bright_mask)
+        artifact_bone_mask = np.zeros_like(bright_mask)  # Artifacts over bone
+        artifact_tissue_mask = np.zeros_like(bright_mask)  # Artifacts over soft tissue
         confidence_map = np.zeros_like(ct_volume, dtype=float)
+
+        # Calculate distance from metal for tie-breaking (GPU accelerated)
+        inverted_metal = np.logical_not(metal_mask)
+        distance_from_metal = distance_transform_edt_gpu(inverted_metal, spacing, use_gpu=use_gpu) / 10.0  # cm
 
         # Process each slice
         for z in range(ct_volume.shape[0]):
@@ -421,9 +496,15 @@ class ArtifactDiscriminator:
                 distance_voxels = np.sqrt(dy**2 + dx**2)
                 distance_mm = distance_voxels * np.mean(spacing[:2])
 
-                # Analyze profile characteristics at this distance
+                # Get the actual HU value at this pixel
+                pixel_hu = ct_volume[z, pixel_y, pixel_x]
+
+                # Analyze profile characteristics at this distance (now includes HU)
                 characteristics = self._analyze_profile_characteristics(
-                    profile, distance_mm, spacing
+                    profile, distance_mm, spacing,
+                    pixel_hu=pixel_hu,
+                    bone_hu_low=bone_hu_low,
+                    bone_hu_high=bone_hu_high
                 )
 
                 # Classify based on characteristics
@@ -433,19 +514,85 @@ class ArtifactDiscriminator:
                     bone_mask[z, pixel_y, pixel_x] = True
                     confidence_map[z, pixel_y, pixel_x] = characteristics['confidence']
                 else:
-                    artifact_mask[z, pixel_y, pixel_x] = True
+                    # This is an artifact - classify what tissue it's overlying
+                    # Use neighborhood analysis to determine context
+                    context = self._analyze_neighborhood_context(
+                        ct_volume, z, pixel_y, pixel_x,
+                        bone_hu_low, bone_hu_high,
+                        tissue_hu_low, tissue_hu_high
+                    )
+
+                    dist_cm = distance_from_metal[z, pixel_y, pixel_x]
+
+                    if context['bone_ratio'] > context['tissue_ratio']:
+                        artifact_bone_mask[z, pixel_y, pixel_x] = True
+                    elif context['tissue_ratio'] > context['bone_ratio']:
+                        artifact_tissue_mask[z, pixel_y, pixel_x] = True
+                    else:
+                        # Tie: use distance as decider
+                        # Close to metal (<1.5cm) → likely tissue (muscle around implant)
+                        # Far from metal (>=1.5cm) → likely bone
+                        if dist_cm < 1.5:
+                            artifact_tissue_mask[z, pixel_y, pixel_x] = True
+                        else:
+                            artifact_bone_mask[z, pixel_y, pixel_x] = True
+
                     confidence_map[z, pixel_y, pixel_x] = characteristics['confidence']
+
+        # Create combined artifact mask for backward compatibility
+        artifact_mask = artifact_bone_mask | artifact_tissue_mask
 
         return {
             'bone_mask': bone_mask,
-            'artifact_mask': artifact_mask,
+            'artifact_mask': artifact_mask,  # Combined for backward compatibility
+            'artifact_bone_mask': artifact_bone_mask,
+            'artifact_tissue_mask': artifact_tissue_mask,
             'confidence_map': confidence_map,
             'method': 'star_profile',
             'metadata': {
                 'num_angles': num_angles,
+                'bone_hu_low': bone_hu_low,
+                'bone_hu_high': bone_hu_high,
+                'tissue_hu_low': tissue_hu_low,
+                'tissue_hu_high': tissue_hu_high,
                 'bone_voxels': np.sum(bone_mask),
-                'artifact_voxels': np.sum(artifact_mask)
+                'artifact_bone_voxels': np.sum(artifact_bone_mask),
+                'artifact_tissue_voxels': np.sum(artifact_tissue_mask),
+                'artifact_voxels': np.sum(artifact_mask),
+                'gpu_used': use_gpu and GPU_AVAILABLE
             }
+        }
+
+    def _analyze_neighborhood_context(self, ct_volume: np.ndarray, z: int, y: int, x: int,
+                                      bone_hu_low: float, bone_hu_high: float,
+                                      tissue_hu_low: float, tissue_hu_high: float,
+                                      window_size: int = 5) -> Dict:
+        """
+        Analyze the neighborhood around a voxel to determine tissue context.
+
+        Returns ratio of bone-like vs tissue-like neighbors.
+        """
+        half_w = window_size // 2
+        z_min = max(0, z - 1)
+        z_max = min(ct_volume.shape[0], z + 2)
+        y_min = max(0, y - half_w)
+        y_max = min(ct_volume.shape[1], y + half_w + 1)
+        x_min = max(0, x - half_w)
+        x_max = min(ct_volume.shape[2], x + half_w + 1)
+
+        neighborhood = ct_volume[z_min:z_max, y_min:y_max, x_min:x_max]
+        total_voxels = neighborhood.size
+
+        if total_voxels == 0:
+            return {'bone_ratio': 0.0, 'tissue_ratio': 0.0}
+
+        # Count voxels in bone and tissue HU ranges
+        bone_count = np.sum((neighborhood >= bone_hu_low) & (neighborhood <= bone_hu_high))
+        tissue_count = np.sum((neighborhood >= tissue_hu_low) & (neighborhood <= tissue_hu_high))
+
+        return {
+            'bone_ratio': bone_count / total_voxels,
+            'tissue_ratio': tissue_count / total_voxels
         }
 
     def _get_star_profiles_detailed(self, slice_data: np.ndarray, center_y: int,
@@ -498,11 +645,22 @@ class ArtifactDiscriminator:
         return profiles
 
     def _analyze_profile_characteristics(self, profile: Dict, distance_mm: float,
-                                         spacing: Tuple[float, float, float]) -> Dict:
+                                         spacing: Tuple[float, float, float],
+                                         pixel_hu: float = None,
+                                         bone_hu_low: float = 150.0,
+                                         bone_hu_high: float = 1500.0) -> Dict:
         """
         Analyze profile characteristics at a given distance.
 
         Returns dictionary with characteristics and classification confidence.
+
+        Args:
+            profile: Profile dictionary with HU values, distances, gradients
+            distance_mm: Distance from metal center in mm
+            spacing: Voxel spacing (z, y, x) in mm
+            pixel_hu: Actual HU value at the pixel being classified
+            bone_hu_low: Lower bound of expected bone HU range
+            bone_hu_high: Upper bound of expected bone HU range
         """
         # Find index closest to desired distance
         distances = profile['distances'] * np.mean(spacing[:2])  # Convert to mm
@@ -521,34 +679,66 @@ class ArtifactDiscriminator:
         smoothness = self._calculate_smoothness_score(grad_window)
         gradient_magnitude = np.abs(np.mean(grad_window))
 
-        # Bone scoring: broad peaks, smooth, gradual gradients
+        # Bone scoring: broad peaks, smooth, gradual gradients, appropriate HU
+        # Total possible range: -1.3 to +1.3 (4 features)
         bone_score = 0.0
 
-        # Peak width criterion (bone: 3-5mm, artifact: <2mm)
+        # Peak width criterion (bone: 3-5mm, artifact: <2mm) - weight: 0.35
         if peak_width_mm > 3.0:
-            bone_score += 0.4
+            bone_score += 0.35
         elif peak_width_mm < 2.0:
-            bone_score -= 0.4
+            bone_score -= 0.35
 
-        # Smoothness criterion (higher = more bone-like)
+        # Smoothness criterion (higher = more bone-like) - weight: 0.25
         if smoothness > 0.7:
-            bone_score += 0.3
+            bone_score += 0.25
         elif smoothness < 0.3:
-            bone_score -= 0.3
+            bone_score -= 0.25
 
-        # Gradient criterion (lower = more bone-like)
+        # Gradient criterion (lower = more bone-like) - weight: 0.25
         if gradient_magnitude < 50:
-            bone_score += 0.3
+            bone_score += 0.25
         elif gradient_magnitude > 150:
-            bone_score -= 0.3
+            bone_score -= 0.25
+
+        # HU range criterion (within bone range = bone-like) - weight: 0.45
+        # This gives significant influence to user-specified HU range
+        hu_score = 0.0
+        if pixel_hu is not None:
+            # Calculate how well the HU fits within the bone range
+            bone_hu_center = (bone_hu_low + bone_hu_high) / 2.0
+            bone_hu_range = bone_hu_high - bone_hu_low
+
+            if bone_hu_low <= pixel_hu <= bone_hu_high:
+                # Inside bone range: score based on how centered it is
+                # Typical cortical bone: 700-1500 HU, cancellous: 300-700 HU
+                # Favor mid-range values as most bone-like
+                distance_from_center = abs(pixel_hu - bone_hu_center)
+                normalized_distance = distance_from_center / (bone_hu_range / 2.0) if bone_hu_range > 0 else 0
+                hu_score = 0.45 * (1.0 - 0.5 * normalized_distance)  # 0.225 to 0.45
+            else:
+                # Outside bone range: negative score proportional to how far outside
+                if pixel_hu < bone_hu_low:
+                    distance_outside = bone_hu_low - pixel_hu
+                else:
+                    distance_outside = pixel_hu - bone_hu_high
+                # Penalize more heavily as we get further from the range
+                penalty = min(1.0, distance_outside / 500.0)  # Max penalty at 500 HU outside
+                hu_score = -0.45 * penalty
+
+            bone_score += hu_score
 
         # Convert to confidence (0 to 1)
-        confidence = (bone_score + 1.0) / 2.0  # Normalize to [0, 1]
+        # Score range is now approximately -1.3 to +1.3
+        confidence = (bone_score + 1.3) / 2.6  # Normalize to [0, 1]
+        confidence = np.clip(confidence, 0.0, 1.0)
 
         return {
             'peak_width_mm': peak_width_mm,
             'smoothness': smoothness,
             'gradient_magnitude': gradient_magnitude,
+            'pixel_hu': pixel_hu,
+            'hu_score': hu_score if pixel_hu is not None else None,
             'bone_score': bone_score,
             'confidence': confidence
         }

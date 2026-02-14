@@ -1383,7 +1383,7 @@ if st.session_state.ct_volume is not None:
             if data:
                 import pandas as pd
                 df = pd.DataFrame(data)
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width='stretch')
             
             # Show HU statistics
             if st.checkbox("Show HU Statistics by Region"):
