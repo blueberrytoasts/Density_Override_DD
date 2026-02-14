@@ -141,7 +141,6 @@ def classify_artifacts_contextually(ct_volume, artifact_mask, metal_mask, spacin
         Dictionary containing:
             - artifact_bone: Artifacts overlying bone (restore to bone HU)
             - artifact_tissue: Artifacts overlying soft tissue (restore to tissue HU)
-            - artifact_mixed: Uncertain classification (ambiguous context)
     """
     print(f"Classifying {np.sum(artifact_mask):,} {artifact_type} artifact voxels contextually...")
     
@@ -151,7 +150,6 @@ def classify_artifacts_contextually(ct_volume, artifact_mask, metal_mask, spacin
     # Initialize contextual masks
     artifact_bone = np.zeros_like(artifact_mask, dtype=bool)
     artifact_tissue = np.zeros_like(artifact_mask, dtype=bool)
-    artifact_mixed = np.zeros_like(artifact_mask, dtype=bool)
 
     # Get coordinates of artifact voxels
     artifact_coords = np.where(artifact_mask)
@@ -160,13 +158,12 @@ def classify_artifacts_contextually(ct_volume, artifact_mask, metal_mask, spacin
     if n_voxels == 0:
         return {
             'artifact_bone': artifact_bone,
-            'artifact_tissue': artifact_tissue,
-            'artifact_mixed': artifact_mixed
+            'artifact_tissue': artifact_tissue
         }
-    
+
     # Process in batches for performance
     batch_size = min(10000, n_voxels)
-    n_bone = n_tissue = n_mixed = 0
+    n_bone = n_tissue = 0
 
     for i in range(0, n_voxels, batch_size):
         end_idx = min(i + batch_size, n_voxels)
@@ -221,6 +218,7 @@ def classify_artifacts_contextually(ct_volume, artifact_mask, metal_mask, spacin
                     tissue_context_score += 1
 
             # CLASSIFICATION: Assign to category with higher context score
+            # No "mixed" category - force a decision using distance as final tie-breaker
             if bone_context_score > tissue_context_score:
                 artifact_bone[z, y, x] = True       # Corrupting bone tissue
                 n_bone += 1
@@ -228,18 +226,23 @@ def classify_artifacts_contextually(ct_volume, artifact_mask, metal_mask, spacin
                 artifact_tissue[z, y, x] = True     # Corrupting soft tissue
                 n_tissue += 1
             else:
-                artifact_mixed[z, y, x] = True      # Ambiguous/uncertain context
-                n_mixed += 1
+                # Tie: use distance from metal as final decider
+                # Close to metal (<15mm) → likely tissue (muscle around implant)
+                # Far from metal (>=15mm) → likely bone (anatomical structures)
+                if distance_mm < 15:
+                    artifact_tissue[z, y, x] = True
+                    n_tissue += 1
+                else:
+                    artifact_bone[z, y, x] = True
+                    n_bone += 1
 
     print(f"Contextual classification results ({artifact_type}):")
     print(f"  {artifact_type.capitalize()} artifacts over bone: {n_bone:,} voxels ({100*n_bone/n_voxels:.1f}%)")
     print(f"  {artifact_type.capitalize()} artifacts over tissue: {n_tissue:,} voxels ({100*n_tissue/n_voxels:.1f}%)")
-    print(f"  Mixed/uncertain: {n_mixed:,} voxels ({100*n_mixed/n_voxels:.1f}%)")
 
     return {
         'artifact_bone': artifact_bone,
-        'artifact_tissue': artifact_tissue,
-        'artifact_mixed': artifact_mixed
+        'artifact_tissue': artifact_tissue
     }
 
 
@@ -268,7 +271,6 @@ def classify_bright_artifacts_contextually(ct_volume, bright_mask, metal_mask, s
         Dictionary with legacy keys:
             - bright_artifact_bone: Bright artifacts over bone
             - bright_artifact_tissue: Bright artifacts over soft tissue
-            - bright_artifact_mixed: Uncertain classification
     """
     result = classify_artifacts_contextually(
         ct_volume, bright_mask, metal_mask, spacing,
@@ -278,8 +280,7 @@ def classify_bright_artifacts_contextually(ct_volume, bright_mask, metal_mask, s
 
     return {
         'bright_artifact_bone': result['artifact_bone'],
-        'bright_artifact_tissue': result['artifact_tissue'],
-        'bright_artifact_mixed': result['artifact_mixed']
+        'bright_artifact_tissue': result['artifact_tissue']
     }
 
 
@@ -305,7 +306,6 @@ def classify_dark_artifacts_contextually(ct_volume, dark_mask, metal_mask, spaci
         Dictionary containing:
             - dark_artifact_bone: Dark artifacts over bone
             - dark_artifact_tissue: Dark artifacts over soft tissue
-            - dark_artifact_mixed: Uncertain classification
     """
     result = classify_artifacts_contextually(
         ct_volume, dark_mask, metal_mask, spacing,
@@ -315,8 +315,7 @@ def classify_dark_artifacts_contextually(ct_volume, dark_mask, metal_mask, spaci
 
     return {
         'dark_artifact_bone': result['artifact_bone'],
-        'dark_artifact_tissue': result['artifact_tissue'],
-        'dark_artifact_mixed': result['artifact_mixed']
+        'dark_artifact_tissue': result['artifact_tissue']
     }
 
 
@@ -592,10 +591,8 @@ def create_context_aware_masks(ct_volume, metal_mask, spacing, **kwargs):
         'bright_artifacts_severe': context_results['bright_artifacts_severe'],
         'bright_artifact_bone': bright_contextual['bright_artifact_bone'],
         'bright_artifact_tissue': bright_contextual['bright_artifact_tissue'],
-        'bright_artifact_mixed': bright_contextual['bright_artifact_mixed'],
         'dark_artifact_bone': dark_contextual['dark_artifact_bone'],
         'dark_artifact_tissue': dark_contextual['dark_artifact_tissue'],
-        'dark_artifact_mixed': dark_contextual['dark_artifact_mixed'],
         # Additional diagnostic data
         'expected_tissue_map': context_results['expected_tissue_map'],
         'elevation_map': context_results['elevation_map']
@@ -631,12 +628,13 @@ def create_sequential_masks(ct_volume, metal_mask, spacing, discrimination_metho
     disc_method = method_map.get(discrimination_method, DiscriminationMethod.DISTANCE_BASED)
     discriminator = ArtifactDiscriminator(disc_method)
     
-    # Get threshold ranges
+    # Get threshold ranges and options
     bright_range = kwargs.get('bright_range', [800, 3500])
     bone_range = kwargs.get('bone_range', [500, 1500])
     dark_range = kwargs.get('dark_range', [-1024, -150])
     roi_bounds = kwargs.get('roi_bounds', None)
     debug = kwargs.get('debug', False)
+    use_gpu = kwargs.get('use_gpu', True)  # GPU acceleration
     
     # Create body mask to exclude air outside patient
     body_mask = create_body_mask(ct_volume, air_threshold=-300)
@@ -672,8 +670,13 @@ def create_sequential_masks(ct_volume, metal_mask, spacing, discrimination_metho
         print(f"Debug - Bright mask voxels before discrimination: {np.sum(bright_mask)}")
         print(f"Debug - Bright range: {bright_range}, Bone range: {bone_range}")
     
-    # Discriminate bone from artifacts
-    result = discriminator.discriminate(ct_volume, metal_mask, bright_mask, spacing)
+    # Discriminate bone from artifacts - pass HU range parameters and GPU option
+    result = discriminator.discriminate(
+        ct_volume, metal_mask, bright_mask, spacing,
+        bone_hu_low=bone_range[0],
+        bone_hu_high=bone_range[1],
+        use_gpu=use_gpu
+    )
     
     if debug:
         print(f"Debug - After discrimination - Bone: {np.sum(result['bone_mask'])}, Artifacts: {np.sum(result['artifact_mask'])}")
@@ -722,10 +725,8 @@ def create_sequential_masks(ct_volume, metal_mask, spacing, discrimination_metho
         'bright_artifacts': result['artifact_mask'],  # Keep original for backward compatibility
         'bright_artifact_bone': bright_contextual['bright_artifact_bone'],
         'bright_artifact_tissue': bright_contextual['bright_artifact_tissue'],
-        'bright_artifact_mixed': bright_contextual['bright_artifact_mixed'],
         'dark_artifact_bone': dark_contextual['dark_artifact_bone'],
-        'dark_artifact_tissue': dark_contextual['dark_artifact_tissue'],
-        'dark_artifact_mixed': dark_contextual['dark_artifact_mixed']
+        'dark_artifact_tissue': dark_contextual['dark_artifact_tissue']
     }
 
 
@@ -978,6 +979,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
                                    use_enhanced_mode=False,
                                    use_advanced_mode=False,
                                    use_refinement=True,
+                                   use_gpu=True,
                                    progress_callback=None):
     """
     Create segmentation using Russian doll approach with smart bone/artifact discrimination.
@@ -1085,16 +1087,18 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             bone_range=(bone_threshold_low, bone_threshold_high),
             bright_range=(bright_threshold_low, bright_threshold_high),
             max_distance_cm=bright_artifact_max_distance_cm,
-            roi_bounds=roi_bounds
+            roi_bounds=roi_bounds,
+            use_gpu=use_gpu
         )
     else:
         segmentation_result = create_sequential_masks(
-            ct_volume, 
-            metal_mask, 
+            ct_volume,
+            metal_mask,
             spacing,
             dark_range=(dark_threshold_low, dark_threshold_high),
             bone_range=(bone_threshold_low, bone_threshold_high),
             bright_range=(bright_threshold_low, bright_threshold_high),
+            use_gpu=use_gpu,
             bright_artifact_max_distance_cm=bright_artifact_max_distance_cm,
             roi_bounds=roi_bounds
         )

@@ -12,7 +12,6 @@ from enum import Enum
 
 class MetalDetectionMethod(Enum):
     """Available metal detection methods."""
-    LEGACY = "legacy"
     ADAPTIVE_3D = "adaptive_3d"
 
 
@@ -21,20 +20,18 @@ class MetalDetector:
     Unified metal detection interface supporting multiple algorithms.
 
     Methods:
-        LEGACY: Initial threshold + star profile refinement
         ADAPTIVE_3D: Multi-planar analysis with FW75% thresholding
     """
-    
+
     def __init__(self, method: MetalDetectionMethod = MetalDetectionMethod.ADAPTIVE_3D):
         """
         Initialize metal detector with specified method.
-        
+
         Args:
             method: Detection method to use
         """
         self.method = method
         self.detectors = {
-            MetalDetectionMethod.LEGACY: self._detect_legacy,
             MetalDetectionMethod.ADAPTIVE_3D: self._detect_adaptive_3d
         }
     
@@ -60,122 +57,7 @@ class MetalDetector:
             raise ValueError(f"Unknown detection method: {self.method}")
         
         return detector(ct_volume, spacing, **kwargs)
-    
-    def _detect_legacy(self, ct_volume: np.ndarray, spacing: Tuple[float, float, float],
-                      min_metal_hu: float = 2500,
-                      margin_cm: float = 1.0,
-                      fw_percentage: float = 75.0,
-                      dilation_iterations: int = 2) -> Dict:
-        """
-        Legacy metal detection using initial threshold + star profiles.
-        
-        This method:
-        1. Applies initial HU threshold
-        2. Finds largest connected component
-        3. Uses star profiles to refine threshold
-        4. Creates ROI with specified margin
-        """
-        # Initial thresholding - use higher threshold for faster processing
-        metal_mask = ct_volume > min_metal_hu
-        
-        if not np.any(metal_mask):
-            return self._empty_result()
-        
-        # Find largest connected component more efficiently
-        labeled, num_features = label(metal_mask)
-        if num_features == 0:
-            return self._empty_result()
-        
-        # More efficient size calculation - only process if reasonable number of components
-        if num_features > 1000:
-            # Too many components, likely noise - increase threshold
-            metal_mask = ct_volume > (min_metal_hu + 500)
-            labeled, num_features = label(metal_mask)
-            if num_features == 0:
-                return self._empty_result()
-        
-        # Use bincount for faster size calculation
-        sizes = np.bincount(labeled.ravel())[1:]  # Skip background (0)
-        largest_label = np.argmax(sizes) + 1
-        metal_mask = labeled == largest_label
-        
-        # Apply dilation if requested
-        if dilation_iterations > 0:
-            struct = generate_binary_structure(3, 3)
-            metal_mask = binary_dilation(metal_mask, structure=struct, 
-                                        iterations=dilation_iterations)
-        
-        # Find center of mass
-        z_coords, y_coords, x_coords = np.where(metal_mask)
-        center_z = int(np.mean(z_coords))
-        center_y = int(np.mean(y_coords))
-        center_x = int(np.mean(x_coords))
-        
-        # Implement intelligent Z-bounds using 50% peak metal HU cutoff
-        peak_metal_hu = np.max(ct_volume[metal_mask])
-        cutoff_hu = peak_metal_hu * 0.5
-        
-        # Find slices that contain substantial metal (above 50% of peak)
-        valid_z_slices = []
-        for z in np.unique(z_coords):
-            slice_mask = metal_mask[z]
-            if np.any(slice_mask):
-                slice_metal_values = ct_volume[z][slice_mask]
-                if np.any(slice_metal_values >= cutoff_hu):
-                    valid_z_slices.append(z)
-        
-        if valid_z_slices:
-            z_min_intelligent = min(valid_z_slices)
-            z_max_intelligent = max(valid_z_slices) + 1
-        else:
-            z_min_intelligent = int(np.min(z_coords))
-            z_max_intelligent = int(np.max(z_coords)) + 1
-        
-        # Create ROI bounds
-        # Convert margin from cm to voxels
-        # spacing is already in mm, so cm * 10 = mm, then divide by spacing
-        spacing_mm = np.mean(spacing)  # spacing is already in mm
-        margin_mm = margin_cm * 10  # Convert cm to mm
-        margin_voxels = int(margin_mm / spacing_mm)
-        roi_bounds = {
-            'z_min': z_min_intelligent,  # Intelligent Z bounds using 50% peak cutoff
-            'z_max': z_max_intelligent,  # Intelligent Z bounds using 50% peak cutoff
-            'y_min': max(0, np.min(y_coords) - margin_voxels),
-            'y_max': min(ct_volume.shape[1], np.max(y_coords) + margin_voxels + 1),
-            'x_min': max(0, np.min(x_coords) - margin_voxels),
-            'x_max': min(ct_volume.shape[2], np.max(x_coords) + margin_voxels + 1)
-        }
-        
-        # Use star profiles to refine threshold (simplified)
-        threshold = self._calculate_star_threshold(
-            ct_volume[center_z], center_y, center_x, roi_bounds, fw_percentage
-        )
-        
-        # Refine mask with new threshold
-        if threshold and threshold > min_metal_hu:
-            metal_mask = ct_volume > threshold
-        
-        # Apply hole filling to the metal mask
-        filled_metal_mask, holes_filled_mask = self._fill_metal_holes(metal_mask)
-        
-        return {
-            'mask': filled_metal_mask,  # Return filled mask
-            'original_mask': metal_mask,  # Keep original for reference
-            'holes_filled_mask': holes_filled_mask,  # Mask of filled holes
-            'roi_bounds': roi_bounds,
-            'threshold': threshold if threshold else min_metal_hu,
-            'center_coords': (center_z, center_y, center_x),
-            'method': 'legacy',
-            'valid_roi_slices': valid_z_slices if 'valid_z_slices' in locals() and valid_z_slices else list(range(roi_bounds['z_min'], roi_bounds['z_max'])),
-            'metadata': {
-                'dilation_iterations': dilation_iterations,
-                'margin_cm': margin_cm,
-                'fw_percentage': fw_percentage,
-                'holes_filled': np.sum(holes_filled_mask),
-                'hole_filling_enabled': True
-            }
-        }
-    
+
     def _detect_adaptive_3d(self, ct_volume: np.ndarray, spacing: Tuple[float, float, float],
                            fw_percentage: float = 75.0,
                            margin_cm: float = 1.0,
@@ -761,20 +643,8 @@ def get_star_profile_lines(slice_2d: np.ndarray, center_y: int, center_x: int, b
     return profiles
 
 
-# Convenience functions for backward compatibility
-def detect_metal_legacy(ct_volume: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
-    """Legacy metal detection for backward compatibility."""
-    detector = MetalDetector(MetalDetectionMethod.LEGACY)
-    return detector.detect(ct_volume, spacing, **kwargs)
-
-
+# Convenience function for direct access
 def detect_metal_adaptive_3d(ct_volume: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
-    """Adaptive 3D metal detection for backward compatibility."""
+    """Adaptive 3D metal detection with star profiles."""
     detector = MetalDetector(MetalDetectionMethod.ADAPTIVE_3D)
-    return detector.detect(ct_volume, spacing, **kwargs)
-
-
-def detect_metal_multi_component(ct_volume: np.ndarray, spacing: Tuple[float, float, float], **kwargs) -> Dict:
-    """Multi-component metal detection for backward compatibility."""
-    detector = MetalDetector(MetalDetectionMethod.MULTI_COMPONENT)
     return detector.detect(ct_volume, spacing, **kwargs)
