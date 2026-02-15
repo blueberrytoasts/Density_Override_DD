@@ -2,8 +2,35 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch, Rectangle
 from matplotlib.lines import Line2D
+from PIL import Image
 import io
 import base64
+
+
+def fast_render_slice(ct_slice, window_center=50, window_width=400):
+    """
+    Render a CT slice to PNG bytes using numpy windowing + PIL.
+    Much faster than matplotlib (~10ms vs ~300ms).
+
+    Args:
+        ct_slice: 2D numpy array of HU values
+        window_center: center of display window (HU)
+        window_width: width of display window (HU)
+
+    Returns:
+        bytes: PNG image data ready for st.image()
+    """
+    # Apply windowing (convert HU to 0-255 grayscale)
+    vmin = window_center - window_width / 2
+    vmax = window_center + window_width / 2
+    windowed = np.clip((ct_slice - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
+
+    # Convert to PIL Image and encode as PNG
+    img = Image.fromarray(windowed, mode='L')
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None, individual_regions=None, custom_names=None, spacing=None):
