@@ -1,5 +1,5 @@
 # Requirements for Python 3.12 compatibility
-streamlit==1.29.0
+streamlit>=1.37.0
 numpy>=1.26.0
 matplotlib>=3.5.0
 pydicom>=2.3.0
