@@ -102,7 +102,16 @@ st.markdown("---")
 # Sidebar
 with st.sidebar:
     st.header("Settings")
-    
+
+    # View mode toggle
+    st.radio(
+        "View Mode",
+        ["Fast (CT Only)", "Overlays"],
+        horizontal=True,
+        key="view_mode",
+        help="Fast mode for quick scrubbing. Overlays mode shows contours."
+    )
+
     # Patient selection
     data_dir = Path("../data")
     if not data_dir.exists():
@@ -686,121 +695,95 @@ def slice_viewer():
     """Fragment-isolated slice viewer. Only re-renders on slice/view changes."""
     max_slice = st.session_state.ct_volume.shape[0] - 1
 
-    # Navigation buttons row
-    col_prev, col_slider, col_next = st.columns([1, 8, 1])
+    # Slice slider (use arrow keys or mouse wheel on image to navigate)
+    current_slice = st.slider(
+        "Select Slice",
+        min_value=0,
+        max_value=max_slice,
+        value=st.session_state.current_slice,
+        format="Slice %d",
+        key="slice_slider"
+    )
+    st.session_state.current_slice = current_slice
 
-    with col_prev:
-        prev_disabled = st.session_state.current_slice == 0
-        if st.button(
-            "⬅️",
-            help="Previous slice (Left Arrow)" if not prev_disabled else "Already at first slice",
-            key="prev_slice",
-            disabled=prev_disabled
-        ):
-            st.session_state.current_slice -= 1
-            st.rerun(scope="fragment")
-
-    with col_slider:
-        current_slice = st.slider(
-            "Select Slice",
-            min_value=0,
-            max_value=max_slice,
-            value=st.session_state.current_slice,
-            format="Slice %d",
-            key="slice_slider"
-        )
-        st.session_state.current_slice = current_slice
-
-    with col_next:
-        next_disabled = st.session_state.current_slice == max_slice
-        if st.button(
-            "➡️",
-            help="Next slice (Right Arrow)" if not next_disabled else "Already at last slice",
-            key="next_slice",
-            disabled=next_disabled
-        ):
-            st.session_state.current_slice += 1
-            st.rerun(scope="fragment")
-
-    # Quick navigation row
-    col_first, col_jump_back, col_info, col_jump_forward, col_last = st.columns([1, 1, 4, 1, 1])
-
-    with col_first:
-        if st.button("⏮️", help="First slice", key="first_slice", disabled=st.session_state.current_slice == 0):
-            st.session_state.current_slice = 0
-            st.rerun(scope="fragment")
-
-    with col_jump_back:
-        if st.button("⏪", help="Jump back 10 slices", key="jump_back"):
-            st.session_state.current_slice = max(0, st.session_state.current_slice - 10)
-            st.rerun(scope="fragment")
-
-    with col_info:
-        st.markdown(
-            f'<div style="text-align: center; padding: 0.5rem; font-size: 0.9rem; color: #666;">'
-            f'Slice {st.session_state.current_slice + 1} of {max_slice + 1}</div>',
-            unsafe_allow_html=True
-        )
-
-    with col_jump_forward:
-        if st.button("⏩", help="Jump forward 10 slices", key="jump_forward"):
-            st.session_state.current_slice = min(max_slice, st.session_state.current_slice + 10)
-            st.rerun(scope="fragment")
-
-    with col_last:
-        if st.button("⏭️", help="Last slice", key="last_slice", disabled=st.session_state.current_slice == max_slice):
-            st.session_state.current_slice = max_slice
-            st.rerun(scope="fragment")
-
-    # Keyboard navigation (arrow keys)
+    # Slice navigation: inject script into PARENT page context (not iframe)
+    # so it can directly access the slider DOM and dispatch events properly.
     st.components.v1.html("""
     <script>
-    document.addEventListener('keydown', function(e) {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-        const slider = window.parent.document.querySelector('[data-testid="stSlider"] input[type="range"]');
-        if (!slider) return;
-        if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-            e.preventDefault();
-            const newVal = Math.max(parseInt(slider.min), parseInt(slider.value) - 1);
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, 'value').set;
-            nativeInputValueSetter.call(slider, newVal);
-            slider.dispatchEvent(new Event('input', { bubbles: true }));
-            slider.dispatchEvent(new Event('change', { bubbles: true }));
-        } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-            e.preventDefault();
-            const newVal = Math.min(parseInt(slider.max), parseInt(slider.value) + 1);
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, 'value').set;
-            nativeInputValueSetter.call(slider, newVal);
-            slider.dispatchEvent(new Event('input', { bubbles: true }));
-            slider.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-    });
+    (function() {
+        if (window.parent._sliceNavReady) return;
+        var s = window.parent.document.createElement('script');
+        s.textContent = `
+        (function() {
+            if (window._sliceNavReady) return;
+            window._sliceNavReady = true;
+
+            var nativeSetter = Object.getOwnPropertyDescriptor(
+                HTMLInputElement.prototype, 'value').set;
+
+            function getSlider() {
+                var sidebar = document.querySelector('[data-testid="stSidebar"]');
+                var all = document.querySelectorAll('input[type="range"]');
+                for (var i = 0; i < all.length; i++) {
+                    if (!sidebar || !sidebar.contains(all[i])) return all[i];
+                }
+                return null;
+            }
+
+            function stepSlider(delta) {
+                var sl = getSlider();
+                if (!sl) return;
+                var v = Math.min(parseInt(sl.max),
+                    Math.max(parseInt(sl.min), parseInt(sl.value) + delta));
+                nativeSetter.call(sl, v);
+                sl.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            // Keyboard: throttled arrow keys (works without slider focus)
+            var lastKey = 0;
+            document.addEventListener('keydown', function(e) {
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                var now = Date.now();
+                if (now - lastKey < 120) { e.preventDefault(); return; }
+                if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+                    e.preventDefault(); lastKey = now; stepSlider(-1);
+                } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+                    e.preventDefault(); lastKey = now; stepSlider(1);
+                }
+            });
+
+            // Mouse wheel on image area
+            document.addEventListener('wheel', function(e) {
+                if (!e.target.closest('img, [data-testid="stImage"]')) return;
+                e.preventDefault();
+                stepSlider(e.deltaY > 0 ? 1 : -1);
+            }, { passive: false });
+
+            // Live slider: debounced updates during drag
+            var timer;
+            document.addEventListener('input', function(e) {
+                if (e.target.type !== 'range') return;
+                clearTimeout(timer);
+                timer = setTimeout(function() {
+                    e.target.dispatchEvent(new Event('change', { bubbles: true }));
+                }, 150);
+            }, true);
+        })();
+        `;
+        window.parent.document.head.appendChild(s);
+    })();
     </script>
     """, height=0)
 
     # Get current slice data
     ct_slice = st.session_state.ct_volume[current_slice]
 
-    # Display slice info
-    z_pos = st.session_state.ct_metadata['slice_z_positions'][current_slice]
-    st.info(f"Slice {current_slice + 1} of {max_slice + 1} | Z position: {z_pos:.2f} mm")
-
-    # View mode toggle
-    view_mode = st.radio(
-        "View Mode",
-        ["Fast (CT Only)", "Overlays"],
-        horizontal=True,
-        key="view_mode",
-        help="Fast mode for quick scrubbing. Overlays mode shows contours."
-    )
-
-    # Display visualization
+    # Display visualization (view mode controlled from sidebar)
+    view_mode = st.session_state.get("view_mode", "Fast (CT Only)")
     if view_mode == "Fast (CT Only)" or not st.session_state.masks:
         # Fast path: numpy windowing + PIL (~10ms)
         png_bytes = fast_render_slice(ct_slice, window_center=50, window_width=400)
-        st.image(png_bytes, caption=f"Slice {current_slice + 1}", use_container_width=True)
+        st.image(png_bytes, caption=f"Slice {current_slice + 1}", width="stretch")
     else:
         # Overlay path: full matplotlib rendering with masks
         roi_bounds = None
