@@ -752,6 +752,34 @@ def slice_viewer():
             st.session_state.current_slice = max_slice
             st.rerun(scope="fragment")
 
+    # Keyboard navigation (arrow keys)
+    st.components.v1.html("""
+    <script>
+    document.addEventListener('keydown', function(e) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        const slider = window.parent.document.querySelector('[data-testid="stSlider"] input[type="range"]');
+        if (!slider) return;
+        if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            const newVal = Math.max(parseInt(slider.min), parseInt(slider.value) - 1);
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value').set;
+            nativeInputValueSetter.call(slider, newVal);
+            slider.dispatchEvent(new Event('input', { bubbles: true }));
+            slider.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+            e.preventDefault();
+            const newVal = Math.min(parseInt(slider.max), parseInt(slider.value) + 1);
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value').set;
+            nativeInputValueSetter.call(slider, newVal);
+            slider.dispatchEvent(new Event('input', { bubbles: true }));
+            slider.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    });
+    </script>
+    """, height=0)
+
     # Get current slice data
     ct_slice = st.session_state.ct_volume[current_slice]
 
