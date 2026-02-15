@@ -681,6 +681,159 @@ with st.sidebar:
                     else:
                         st.error("NIFTI export requires affine transformation matrix")
 
+@st.fragment
+def slice_viewer():
+    """Fragment-isolated slice viewer. Only re-renders on slice/view changes."""
+    max_slice = st.session_state.ct_volume.shape[0] - 1
+
+    # Navigation buttons row
+    col_prev, col_slider, col_next = st.columns([1, 8, 1])
+
+    with col_prev:
+        prev_disabled = st.session_state.current_slice == 0
+        if st.button(
+            "⬅️",
+            help="Previous slice (Left Arrow)" if not prev_disabled else "Already at first slice",
+            key="prev_slice",
+            disabled=prev_disabled
+        ):
+            st.session_state.current_slice -= 1
+            st.rerun(scope="fragment")
+
+    with col_slider:
+        current_slice = st.slider(
+            "Select Slice",
+            min_value=0,
+            max_value=max_slice,
+            value=st.session_state.current_slice,
+            format="Slice %d",
+            key="slice_slider"
+        )
+        st.session_state.current_slice = current_slice
+
+    with col_next:
+        next_disabled = st.session_state.current_slice == max_slice
+        if st.button(
+            "➡️",
+            help="Next slice (Right Arrow)" if not next_disabled else "Already at last slice",
+            key="next_slice",
+            disabled=next_disabled
+        ):
+            st.session_state.current_slice += 1
+            st.rerun(scope="fragment")
+
+    # Quick navigation row
+    col_first, col_jump_back, col_info, col_jump_forward, col_last = st.columns([1, 1, 4, 1, 1])
+
+    with col_first:
+        if st.button("⏮️", help="First slice", key="first_slice", disabled=st.session_state.current_slice == 0):
+            st.session_state.current_slice = 0
+            st.rerun(scope="fragment")
+
+    with col_jump_back:
+        if st.button("⏪", help="Jump back 10 slices", key="jump_back"):
+            st.session_state.current_slice = max(0, st.session_state.current_slice - 10)
+            st.rerun(scope="fragment")
+
+    with col_info:
+        st.markdown(
+            f'<div style="text-align: center; padding: 0.5rem; font-size: 0.9rem; color: #666;">'
+            f'Slice {st.session_state.current_slice + 1} of {max_slice + 1}</div>',
+            unsafe_allow_html=True
+        )
+
+    with col_jump_forward:
+        if st.button("⏩", help="Jump forward 10 slices", key="jump_forward"):
+            st.session_state.current_slice = min(max_slice, st.session_state.current_slice + 10)
+            st.rerun(scope="fragment")
+
+    with col_last:
+        if st.button("⏭️", help="Last slice", key="last_slice", disabled=st.session_state.current_slice == max_slice):
+            st.session_state.current_slice = max_slice
+            st.rerun(scope="fragment")
+
+    # Get current slice data
+    ct_slice = st.session_state.ct_volume[current_slice]
+
+    # Display slice info
+    z_pos = st.session_state.ct_metadata['slice_z_positions'][current_slice]
+    st.info(f"Slice {current_slice + 1} of {max_slice + 1} | Z position: {z_pos:.2f} mm")
+
+    # View mode toggle
+    view_mode = st.radio(
+        "View Mode",
+        ["Fast (CT Only)", "Overlays"],
+        horizontal=True,
+        key="view_mode",
+        help="Fast mode for quick scrubbing. Overlays mode shows contours."
+    )
+
+    # Display visualization
+    if view_mode == "Fast (CT Only)" or not st.session_state.masks:
+        # Fast path: numpy windowing + PIL (~10ms)
+        png_bytes = fast_render_slice(ct_slice, window_center=50, window_width=400)
+        st.image(png_bytes, caption=f"Slice {current_slice + 1}", use_container_width=True)
+    else:
+        # Overlay path: full matplotlib rendering with masks
+        roi_bounds = None
+        roi_bounds_2d = {}
+        if st.session_state.metal_detection_result:
+            roi_bounds = st.session_state.metal_detection_result['roi_bounds']
+            roi_bounds_2d = {
+                'y_min': roi_bounds['y_min'],
+                'y_max': roi_bounds['y_max'],
+                'x_min': roi_bounds['x_min'],
+                'x_max': roi_bounds['x_max']
+            }
+
+        # Create masks dict for current slice only - respect visibility settings
+        slice_masks = {}
+        for name, mask in st.session_state.masks.items():
+            if isinstance(mask, np.ndarray) and mask.ndim == 3:
+                if st.session_state.contour_visibility.get(name, True):
+                    slice_masks[name] = mask[current_slice]
+
+        # Convert roi_bounds_2d dict to tuple format expected by create_overlay_image
+        roi_boundaries_tuple = None
+        if roi_bounds_2d:
+            valid_roi_slices = st.session_state.metal_detection_result.get('valid_roi_slices', None)
+            if valid_roi_slices is None or current_slice in valid_roi_slices:
+                roi_boundaries_tuple = (
+                    roi_bounds_2d['y_min'],
+                    roi_bounds_2d['y_max'],
+                    roi_bounds_2d['x_min'],
+                    roi_bounds_2d['x_max']
+                )
+
+        # Get individual regions for this slice
+        current_slice_regions = None
+        if (st.session_state.metal_detection_result and
+            'individual_regions' in st.session_state.metal_detection_result and
+            current_slice in st.session_state.metal_detection_result['individual_regions']):
+            current_slice_regions = st.session_state.metal_detection_result['individual_regions'][current_slice]
+
+        fig = create_overlay_image(
+            ct_slice,
+            slice_masks,
+            roi_boundaries_tuple,
+            current_slice,
+            individual_regions=current_slice_regions,
+            custom_names=st.session_state.contour_names,
+            spacing=st.session_state.ct_metadata['spacing']
+        )
+        st.pyplot(fig)
+        # Export button for overlay image
+        png_bytes = fig_to_png_bytes(fig, dpi=300)
+        patient_name = st.session_state.get('selected_patient', 'patient')
+        st.download_button(
+            label="Export Overlay as PNG",
+            data=png_bytes,
+            file_name=f"{patient_name}_slice_{current_slice}_overlay.png",
+            mime="image/png"
+        )
+        plt.close()
+
+
 # Main content area
 if st.session_state.ct_volume is not None:
     # Create tabs for different views
@@ -693,85 +846,7 @@ if st.session_state.ct_volume is not None:
         with col1:
             st.subheader("CT Slice Viewer")
             
-            # Slice selector with navigation buttons
-            max_slice = st.session_state.ct_volume.shape[0] - 1
-            
-            # Navigation buttons row
-            col_prev, col_slider, col_next = st.columns([1, 8, 1])
-            
-            with col_prev:
-                # Previous button with disabled state
-                prev_disabled = st.session_state.current_slice == 0
-                if st.button(
-                    "⬅️", 
-                    help="Previous slice (Left Arrow)" if not prev_disabled else "Already at first slice", 
-                    key="prev_slice",
-                    disabled=prev_disabled
-                ):
-                    st.session_state.current_slice -= 1
-                    st.rerun()
-            
-            with col_slider:
-                current_slice = st.slider(
-                    "Select Slice",
-                    min_value=0,
-                    max_value=max_slice,
-                    value=st.session_state.current_slice,
-                    format="Slice %d",
-                    key="slice_slider"
-                )
-                st.session_state.current_slice = current_slice
-            
-            with col_next:
-                # Next button with disabled state
-                next_disabled = st.session_state.current_slice == max_slice
-                if st.button(
-                    "➡️", 
-                    help="Next slice (Right Arrow)" if not next_disabled else "Already at last slice", 
-                    key="next_slice",
-                    disabled=next_disabled
-                ):
-                    st.session_state.current_slice += 1
-                    st.rerun()
-            
-            # Quick navigation row
-            col_first, col_jump_back, col_info, col_jump_forward, col_last = st.columns([1, 1, 4, 1, 1])
-            
-            with col_first:
-                if st.button("⏮️", help="First slice", key="first_slice", disabled=st.session_state.current_slice == 0):
-                    st.session_state.current_slice = 0
-                    st.rerun()
-            
-            with col_jump_back:
-                if st.button("⏪", help="Jump back 10 slices", key="jump_back"):
-                    st.session_state.current_slice = max(0, st.session_state.current_slice - 10)
-                    st.rerun()
-            
-            with col_info:
-                st.markdown(
-                    f'<div style="text-align: center; padding: 0.5rem; font-size: 0.9rem; color: #666;">'
-                    f'Slice {st.session_state.current_slice + 1} of {max_slice + 1}</div>', 
-                    unsafe_allow_html=True
-                )
-            
-            with col_jump_forward:
-                if st.button("⏩", help="Jump forward 10 slices", key="jump_forward"):
-                    st.session_state.current_slice = min(max_slice, st.session_state.current_slice + 10)
-                    st.rerun()
-            
-            with col_last:
-                if st.button("⏭️", help="Last slice", key="last_slice", disabled=st.session_state.current_slice == max_slice):
-                    st.session_state.current_slice = max_slice
-                    st.rerun()
-            
-            # Get current slice data
-            ct_slice = st.session_state.ct_volume[current_slice]
-            
-            # Display slice info
-            z_pos = st.session_state.ct_metadata['slice_z_positions'][current_slice]
-            st.info(f"Slice {current_slice + 1} of {max_slice + 1} | Z position: {z_pos:.2f} mm")
-            
-            # Analysis buttons
+            # Analysis buttons (outside fragment - trigger full page rerun)
             col_btn1, col_btn2 = st.columns(2)
             
             with col_btn1:
@@ -1080,83 +1155,13 @@ if st.session_state.ct_volume is not None:
                             elapsed_time = end_time - start_time
                             st.info(f"⏱️ Segmentation took {elapsed_time:.2f} seconds.")
             
-            # View mode toggle
-            view_mode = st.radio(
-                "View Mode",
-                ["Fast (CT Only)", "Overlays"],
-                horizontal=True,
-                key="view_mode",
-                help="Fast mode for quick scrubbing. Overlays mode shows contours."
-            )
-
-            # Display visualization
-            if view_mode == "Fast (CT Only)" or not st.session_state.masks:
-                # Fast path: numpy windowing + PIL (~10ms)
-                png_bytes = fast_render_slice(ct_slice, window_center=50, window_width=400)
-                st.image(png_bytes, caption=f"Slice {current_slice + 1}", use_container_width=True)
-            else:
-                # Overlay path: full matplotlib rendering with masks
-                roi_bounds = None
-                roi_bounds_2d = {}
-                if st.session_state.metal_detection_result:
-                    roi_bounds = st.session_state.metal_detection_result['roi_bounds']
-                    roi_bounds_2d = {
-                        'y_min': roi_bounds['y_min'],
-                        'y_max': roi_bounds['y_max'],
-                        'x_min': roi_bounds['x_min'],
-                        'x_max': roi_bounds['x_max']
-                    }
-
-                # Create masks dict for current slice only - respect visibility settings
-                slice_masks = {}
-                for name, mask in st.session_state.masks.items():
-                    if isinstance(mask, np.ndarray) and mask.ndim == 3:
-                        if st.session_state.contour_visibility.get(name, True):
-                            slice_masks[name] = mask[current_slice]
-
-                # Convert roi_bounds_2d dict to tuple format expected by create_overlay_image
-                roi_boundaries_tuple = None
-                if roi_bounds_2d:
-                    valid_roi_slices = st.session_state.metal_detection_result.get('valid_roi_slices', None)
-                    if valid_roi_slices is None or current_slice in valid_roi_slices:
-                        roi_boundaries_tuple = (
-                            roi_bounds_2d['y_min'],
-                            roi_bounds_2d['y_max'],
-                            roi_bounds_2d['x_min'],
-                            roi_bounds_2d['x_max']
-                        )
-
-                # Get individual regions for this slice
-                current_slice_regions = None
-                if (st.session_state.metal_detection_result and
-                    'individual_regions' in st.session_state.metal_detection_result and
-                    current_slice in st.session_state.metal_detection_result['individual_regions']):
-                    current_slice_regions = st.session_state.metal_detection_result['individual_regions'][current_slice]
-
-                fig = create_overlay_image(
-                    ct_slice,
-                    slice_masks,
-                    roi_boundaries_tuple,
-                    current_slice,
-                    individual_regions=current_slice_regions,
-                    custom_names=st.session_state.contour_names,
-                    spacing=st.session_state.ct_metadata['spacing']
-                )
-                st.pyplot(fig)
-                # Export button for overlay image
-                png_bytes = fig_to_png_bytes(fig, dpi=300)
-                patient_name = st.session_state.get('selected_patient', 'patient')
-                st.download_button(
-                    label="Export Overlay as PNG",
-                    data=png_bytes,
-                    file_name=f"{patient_name}_slice_{current_slice}_overlay.png",
-                    mime="image/png"
-                )
-                plt.close()
+            # Slice viewer fragment (navigation + rendering, isolated rerun)
+            slice_viewer()
         
         with col2:
             st.subheader("Analysis Results")
-            
+            current_slice = st.session_state.current_slice
+
             if st.session_state.metal_detection_result:
                 # Show detected thresholds
                 st.markdown("**Adaptive Thresholds**")
