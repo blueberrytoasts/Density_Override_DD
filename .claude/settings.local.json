@@ -14,7 +14,10 @@
       "Bash(git revert:*)",
       "Bash(del IMPLEMENTATION_SUMMARY.md STAR_PROFILE_RECOVERY.md TESTING_GUIDE.md CHANGELOG_2025-10-22.md)",
       "Bash(move:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(git pull:*)",
+      "Bash(git branch:*)",
+      "Bash(git worktree:*)"
     ],
     "deny": [],
     "ask": []
