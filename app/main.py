@@ -32,9 +32,10 @@ from contour_operations import (create_bright_artifact_mask, create_dark_artifac
                                create_bone_mask, save_all_contours_as_nifti, refine_mask,
                                create_russian_doll_segmentation, create_sequential_masks)
 from visualization import (create_overlay_image, create_histogram, fig_to_base64,
-                          fig_to_png_bytes, create_multi_slice_view, visualize_star_profiles,
-                          plot_threshold_evolution, visualize_discrimination_slice,
-                          create_histogram_with_thresholds, create_threshold_preview)
+                          fig_to_png_bytes, fast_render_slice, create_multi_slice_view,
+                          visualize_star_profiles, plot_threshold_evolution,
+                          visualize_discrimination_slice, create_histogram_with_thresholds,
+                          create_threshold_preview)
 from config import ThresholdConfig, init_threshold_state, reset_thresholds, validate_all_thresholds
 
 # Page configuration
@@ -155,7 +156,7 @@ with st.sidebar:
     
     with analysis_tab1:
         st.markdown("**3D Adaptive Metal Detection**")
-        st.info("💡 Combines coronal/sagittal analysis with star profile algorithm for optimal metal boundary detection")
+        st.info("💡 3D adaptive metal detection with star profile algorithm for metal boundary detection")
 
         margin_cm = st.slider(
             "3D Search Margin (cm)",
@@ -777,7 +778,7 @@ if st.session_state.ct_volume is not None:
                 if st.button("🎯 Detect Metal Automatically", type="primary"):
                     with st.spinner("Detecting metal implant..."):
                         start_time = time.time()
-                        # 3D adaptive method with coronal/sagittal analysis + star profiles
+                        # 3D adaptive method with star profiles
                         detector = MetalDetector(MetalDetectionMethod.ADAPTIVE_3D)
                         # Fix spacing to be positive (some DICOM files have negative z-spacing)
                         spacing = np.abs(st.session_state.ct_metadata['spacing'])
@@ -1079,29 +1080,41 @@ if st.session_state.ct_volume is not None:
                             elapsed_time = end_time - start_time
                             st.info(f"⏱️ Segmentation took {elapsed_time:.2f} seconds.")
             
+            # View mode toggle
+            view_mode = st.radio(
+                "View Mode",
+                ["Fast (CT Only)", "Overlays"],
+                horizontal=True,
+                key="view_mode",
+                help="Fast mode for quick scrubbing. Overlays mode shows contours."
+            )
+
             # Display visualization
-            if st.session_state.masks:
+            if view_mode == "Fast (CT Only)" or not st.session_state.masks:
+                # Fast path: numpy windowing + PIL (~10ms)
+                png_bytes = fast_render_slice(ct_slice, window_center=50, window_width=400)
+                st.image(png_bytes, caption=f"Slice {current_slice + 1}", use_container_width=True)
+            else:
+                # Overlay path: full matplotlib rendering with masks
                 roi_bounds = None
+                roi_bounds_2d = {}
                 if st.session_state.metal_detection_result:
                     roi_bounds = st.session_state.metal_detection_result['roi_bounds']
-                    # Convert 3D bounds to 2D for current slice
                     roi_bounds_2d = {
                         'y_min': roi_bounds['y_min'],
-                        'y_max': roi_bounds['y_max'], 
+                        'y_max': roi_bounds['y_max'],
                         'x_min': roi_bounds['x_min'],
                         'x_max': roi_bounds['x_max']
                     }
-                
+
                 # Create masks dict for current slice only - respect visibility settings
                 slice_masks = {}
                 for name, mask in st.session_state.masks.items():
                     if isinstance(mask, np.ndarray) and mask.ndim == 3:
-                        # Only include if visibility is enabled
                         if st.session_state.contour_visibility.get(name, True):
                             slice_masks[name] = mask[current_slice]
-                
+
                 # Convert roi_bounds_2d dict to tuple format expected by create_overlay_image
-                # Only show ROI if current slice is in valid_roi_slices
                 roi_boundaries_tuple = None
                 if roi_bounds_2d:
                     valid_roi_slices = st.session_state.metal_detection_result.get('valid_roi_slices', None)
@@ -1112,14 +1125,14 @@ if st.session_state.ct_volume is not None:
                             roi_bounds_2d['x_min'],
                             roi_bounds_2d['x_max']
                         )
-                
-                # Get individual regions for this slice if using 3D adaptive detection
+
+                # Get individual regions for this slice
                 current_slice_regions = None
-                if (st.session_state.metal_detection_result and 
+                if (st.session_state.metal_detection_result and
                     'individual_regions' in st.session_state.metal_detection_result and
                     current_slice in st.session_state.metal_detection_result['individual_regions']):
                     current_slice_regions = st.session_state.metal_detection_result['individual_regions'][current_slice]
-                
+
                 fig = create_overlay_image(
                     ct_slice,
                     slice_masks,
@@ -1137,23 +1150,6 @@ if st.session_state.ct_volume is not None:
                     label="Export Overlay as PNG",
                     data=png_bytes,
                     file_name=f"{patient_name}_slice_{current_slice}_overlay.png",
-                    mime="image/png"
-                )
-                plt.close()
-            else:
-                # Show simple preview
-                fig, ax = plt.subplots(figsize=(8, 8))
-                ax.imshow(ct_slice, cmap='gray', vmin=-150, vmax=250)
-                ax.set_title(f"CT Slice {current_slice}")
-                ax.axis('off')
-                st.pyplot(fig)
-                # Export button for preview image
-                png_bytes = fig_to_png_bytes(fig, dpi=300)
-                patient_name = st.session_state.get('selected_patient', 'patient')
-                st.download_button(
-                    label="Export Preview as PNG",
-                    data=png_bytes,
-                    file_name=f"{patient_name}_slice_{current_slice}_preview.png",
                     mime="image/png"
                 )
                 plt.close()
