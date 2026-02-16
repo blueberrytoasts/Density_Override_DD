@@ -85,14 +85,15 @@ for angle in range(16):
 
 ### Step 5: Filter Lines That Actually Hit Metal
 
-**Critical filtering step:** Only include lines where the peak HU > 2500.
+**Critical filtering step:** Only include lines where the peak HU exceeds 75% of the maximum HU in the slice. This adaptive filter replaces the old hardcoded 2500 HU check, allowing the algorithm to generalize across different metal types (titanium, steel, tantalum, etc.).
 
 ```python
-if peak_hu > 2500:  # This line actually hit metal
+metal_filter_threshold = max_slice_hu * 0.75
+if peak_hu > metal_filter_threshold:  # This line actually hit metal
     valid_thresholds.append(peak_hu * fw_percentage)
 ```
 
-**Why this matters:** Some lines may miss the metal entirely and hit bone (~1000-1500 HU) or soft tissue. Including these would drag the threshold down incorrectly.
+**Why this matters:** Some lines may miss the metal entirely and hit bone (~1000-1500 HU) or soft tissue. Including these would drag the threshold down incorrectly. Using 75% of the slice maximum (rather than a fixed value) adapts to varying implant densities and scanner calibrations.
 
 ### Step 6: Calculate FW% Threshold
 
@@ -141,7 +142,7 @@ threshold_evolution = {
 
 ## Fallback Behavior
 
-If no lines on a slice hit metal (all peaks < 2500 HU), the algorithm falls back to the initial 2500 HU threshold for that slice:
+If no lines on a slice hit metal (all peaks below 75% of the slice maximum), the algorithm falls back to the initial 2500 HU threshold for that slice:
 
 ```python
 if no valid thresholds:
@@ -159,7 +160,7 @@ This can happen on slices at the edge of the implant where the metal cross-secti
 | `fw_percentage` | 75% | 50-90% | Percentage of peak HU for threshold calculation |
 | `use_star_profiles` | True | True/False | Enable/disable adaptive detection |
 | `num_angles` | 16 | - | Number of radial lines in star pattern |
-| `min_metal_hu` | 2500 | - | Minimum HU to consider a line as hitting metal |
+| `metal_filter` | 75% of slice max | - | Adaptive filter: line must exceed 75% of max HU in slice |
 
 ---
 
@@ -215,9 +216,10 @@ Metal: >3450 HU (no metal on this slice)
 
 ## Code References
 
-- Star profile threshold calculation: `app/core/metal_detection.py:590-650`
+- Star profile threshold calculation: `app/core/metal_detection.py:479-610`
 - Per-slice adaptive loop: `app/core/metal_detection.py:216-267`
-- UI threshold display: `app/main.py:1121-1137`
+- Star profile line generation: `app/core/metal_detection.py:612+`
+- UI threshold display: `app/main.py:~1069-1095`
 
 ---
 

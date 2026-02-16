@@ -27,6 +27,8 @@ An advanced Streamlit web application for automatic detection and characterizati
 - **GPU acceleration** support (optional with CuPy)
 
 ### 📊 Visualization & Analysis
+- **Fast slice viewer**: PIL-based rendering (~10ms) with `@st.fragment` isolation for quick scrubbing
+- **Overlay mode**: Matplotlib contour overlays with auto-switch on detection/segmentation
 - **Multi-slice grid view** with individual ROI indicators
 - **Star profile visualization** showing all 16 analysis lines
 - **Discrimination confidence maps** for bone/artifact separation
@@ -172,9 +174,14 @@ streamlit run main.py --server.address localhost --server.port 8501
    - Applies morphological refinement
 
 ### 4. 📊 Analysis & Visualization
-Navigate through multiple analysis tabs:
-- **Single Slice Analysis**: Interactive slice viewer with overlays
-- **Multi-Slice View**: Grid display with ROI indicators  
+Two view modes (toggled in sidebar):
+- **Fast (CT Only)**: PIL-based grayscale rendering (~10ms) for quick slice scrubbing
+- **Overlays**: Matplotlib rendering with color-coded contour overlays
+
+The viewer automatically switches to Overlays after running detection or segmentation. Navigate slices using the slider (arrow keys work when slider is focused). Adaptive thresholds, segmentation statistics, and a color legend are displayed in the right panel.
+
+Additional analysis tabs:
+- **Multi-Slice View**: Grid display with ROI indicators
 - **Metal Detection Details**: Star profile visualizations
 - **Volume Statistics**: Quantitative metrics and confidence scores
 

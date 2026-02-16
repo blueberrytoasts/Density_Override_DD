@@ -52,22 +52,61 @@
 
 ### Outstanding Issues
 
-**Scroll wheel on image not working**
-- JS `e.preventDefault()` fires (page scroll blocked when hovering image) but `stepSlider()` doesn't change the slice
-- Root cause: likely the `getSlider()` DOM query can't find the `input[type="range"]` element, OR the native value setter + event dispatch doesn't trigger Streamlit's React state update in v1.54
-- User provided SO link for reference: https://stackoverflow.com/questions/74626851/python-streamlit-feature-for-interacting-with-displayed-images
-- **Next session:** investigate Streamlit 1.54 slider DOM structure, consider custom component approach
+**Scroll wheel — parked (not fixable with current approach)**
+- JS injection cannot reliably control Streamlit's React slider after `@st.fragment` reruns destroy/recreate the DOM element
+- `_valueTracker` trick (React 16/17) doesn't work with React 18 in Streamlit 1.54
+- All scroll wheel JS code has been removed; arrow keys work natively when slider has focus
 
-**Arrow keys require slider focus**
-- Custom JS keyboard handler may not be executing; the working behavior is native browser range-input keyboard support
-- Holding key down doesn't scroll continuously (fragment rerun may cause focus loss)
-
-### Files Modified
+### Files Modified (Session 2)
 - `requirements.txt` — Streamlit version bump
 - `app/visualization.py` — added `fast_render_slice()`, PIL import
 - `app/main.py` — fragment viewer, view mode in sidebar, JS navigation, removed buttons
 
 ### Notes
-- `app/cornerstone_viewer.py` is an orphaned file from a previous JS viewer attempt. Never integrated. Can be deleted.
 - The bone_low/bone_high slider disconnection issue (documented in CLAUDE.md) is still outstanding.
 - Data pipeline (numpy arrays, masks, DICOM/NIFTI export) completely unaffected — all changes are display-only.
+
+---
+
+## Session 3: UI Cleanup & Overlay Improvements (`feature/fast-slice-viewer`)
+
+### Completed (1 commit: `60a71bb`)
+
+**1. Remove broken scroll wheel JS**
+- Removed entire JS injection block (scroll wheel + keyboard hack + DOM manipulation)
+- Root cause confirmed: `@st.fragment` reruns destroy/recreate slider DOM, making cached JS references stale
+
+**2. Delete orphaned cornerstone_viewer.py**
+- Removed `app/cornerstone_viewer.py` (354 lines, never imported)
+- Removed from README project structure
+
+**3. Overlay rendering overhaul**
+- Removed legend from matplotlib figure — now rendered as static HTML in col2
+- Removed title from overlay figure ("CT Slice X with Characterized Regions" → just "Slice X" caption)
+- Changed `create_overlay_image()` to use `fig.add_axes([0,0,1,1])` with black background — no white border
+- Overlay now renders via `fig_to_png_bytes()` → `st.image()` instead of `st.pyplot()` — same sizing as Fast mode
+- `fig_to_png_bytes()` now uses `fig.get_facecolor()` instead of hardcoded white
+
+**4. Status messages → toast popups**
+- All `st.success()`/`st.info()` boxes from detection and segmentation replaced with `st.toast()`
+- Eliminates the stack of blue/green boxes that pushed the image down
+
+**5. Auto-switch to Overlays mode**
+- Detection and segmentation set `_switch_to_overlays` flag
+- Sidebar radio widget consumes flag before rendering (avoids StreamlitAPIException)
+
+**6. Restyled col2 (right panel)**
+- Removed "Analysis Results" subheader
+- "Adaptive Thresholds" and "Segmentation Statistics" now blue-colored smaller headings with grey data text
+- Legend rendered as vertical column below statistics with a divider line
+- Fixed `ct_slice` scope for histogram checkbox in col2
+
+**7. Metal detection threshold change**
+- Star profile metal filter: 50% → 75% of max HU in slice (comments updated)
+
+### Files Modified (Session 3)
+- `app/main.py` — toast messages, view mode auto-switch, col2 restyling, legend placement, removed JS
+- `app/visualization.py` — removed legend/title from figure, black background, edge-to-edge axes
+- `app/cornerstone_viewer.py` — deleted
+- `app/core/metal_detection.py` — metal filter threshold 50% → 75%
+- `README.md` — removed cornerstone_viewer from structure

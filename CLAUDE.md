@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-## CURRENT WORK STATUS (feature/star-profile-recovery branch)
+## CURRENT WORK STATUS
+
+### Active Branch: `feature/fast-slice-viewer`
+Fast slice viewer with `@st.fragment` isolation, two view modes (Fast CT Only / Overlays), auto-switch to overlays on detection/segmentation. Status messages use `st.toast()` to avoid pushing the image down.
 
 ### Outstanding Issue: HU Range Sliders Non-Functional
 
@@ -17,19 +20,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Option B (Weighted)**: Add HU as 4th feature in bone_score calculation
 - **Option C (Two-stage)**: HU filter first, then profile analysis
 
-**Key Files**:
-- UI sliders: `app/main.py:~350-360`
-- Discrimination call: `app/main.py:~900-920`
-- Star profile logic: `app/core/discrimination.py:351-625`
-
 **Workaround**: Use "Russian Doll with Distance-Based Discrimination" if HU control is needed.
 
 ### What's Working
-- Full FW75% star profile metal detection (`app/core/metal_detection.py:511-591`)
+- Fast slice viewer: PIL-based rendering (~10ms) via `fast_render_slice()` in `app/visualization.py`
+- `@st.fragment` isolated viewer — slice navigation doesn't trigger full page rerun
+- Overlay view: matplotlib figure rendered to PNG bytes, displayed via `st.image()` (no legend in figure)
+- Static HTML legend + styled analysis panel in right column (col2)
+- Auto-switch to Overlays mode when Detect Metal or Segment Artifacts completes
+- Full FW75% star profile metal detection (`app/core/metal_detection.py:479-610`)
 - Per-slice adaptive thresholding (`app/core/metal_detection.py:216-267`)
+- Adaptive metal filter: 75% of max HU in slice (not hardcoded 2500)
 - 32-angle configurable star profiles
 - ROI bounds and body mask constraints
 - Profile-based discrimination (just needs HU integration)
+
+### Scroll Wheel Navigation — Not Working (Parked)
+Attempted JS injection to capture wheel events on the image and step the slider. Does not work reliably with Streamlit 1.54 + `@st.fragment` because React destroys/recreates slider DOM on each fragment rerun. The JS injection code has been removed. Arrow keys work natively when the slider has focus.
 
 ---
 
@@ -41,17 +48,21 @@ This is a medical imaging research project focused on characterizing metal artif
 
 ```
 ├── app/                       # Application source code
-│   ├── main.py               # Streamlit web application
+│   ├── main.py               # Streamlit web app (fragment viewer, two view modes)
 │   ├── dicom_utils.py        # DICOM loading and RTSTRUCT handling
 │   ├── dicom_export.py       # DICOM RT Structure export
 │   ├── contour_operations.py # Boolean operations and mask refinement
-│   ├── visualization.py      # Visualization and plotting
+│   ├── visualization.py      # Visualization (fast_render_slice, create_overlay_image)
+│   ├── config.py             # Configuration management
+│   ├── body_mask.py          # Body masking utilities
 │   └── core/                  # Core algorithms
 │       ├── metal_detection.py   # Metal detection (3D adaptive + star profiles)
 │       └── discrimination.py    # Bone/artifact discrimination
+├── algorithm detailed descriptions/  # Algorithm documentation
 ├── data/                      # Patient DICOM data (HIP* Patient folders)
 ├── output/                    # Generated masks and exports
-├── requirements.txt           # Python dependencies
+├── docs/                      # Changelogs and plans
+├── requirements.txt           # Python dependencies (streamlit>=1.37.0)
 ├── run.sh                     # Launch script
 ├── CLAUDE.md                  # THIS FILE - read by Claude at session start
 └── README.md                  # User documentation
@@ -71,7 +82,7 @@ This is a medical imaging research project focused on characterizing metal artif
 5. **Export**: NIFTI masks or DICOM RT Structure Sets
 
 ### Key HU Ranges (Hounsfield Units)
-- Metal: >2500 HU (automatically detected using FW75% algorithm)
+- Metal: adaptive (75% of slice max HU, refined by FW75% star profiles)
 - Bright artifacts/Bone: 300-1500 HU (discriminated by profile analysis)
 - Dark artifacts: <-150 HU
 - Soft tissue: -100 to 300 HU
@@ -115,11 +126,13 @@ streamlit run app/main.py --server.address localhost --server.port 8501
 ## Code Standards
 
 ### Module Organization
-- `main.py`: Streamlit UI and workflow coordination
+- `main.py`: Streamlit UI, `@st.fragment` slice viewer, two view modes, workflow coordination
 - `dicom_utils.py`: DICOM I/O operations, HU conversion
 - `dicom_export.py`: DICOM RT Structure Set creation
 - `contour_operations.py`: Boolean operations, mask refinement, Russian doll segmentation
-- `visualization.py`: Plotting, overlays, and multi-slice views
+- `visualization.py`: `fast_render_slice()` (PIL ~10ms), `create_overlay_image()` (matplotlib), `fig_to_png_bytes()`
+- `config.py`: Configuration management
+- `body_mask.py`: Body masking utilities (air exclusion)
 - `core/metal_detection.py`: 3D adaptive metal detection with star profiles
 - `core/discrimination.py`: Star profile-based bone vs artifact discrimination
 
@@ -173,8 +186,9 @@ cd app && streamlit run main.py
 The star profile algorithm automatically determines metal thresholds by:
 1. Shooting 16 radial lines from detected high-intensity centers
 2. Finding peaks along each profile
-3. Calculating 75% of peak value as the threshold
-4. Averaging thresholds across all profiles
+3. Filtering: only lines where peak > 75% of slice max HU (adaptive, not hardcoded)
+4. Calculating 75% of peak value as the threshold per valid line
+5. Using minimum threshold across valid profiles for the slice
 
 ### Russian Doll Segmentation
 Sequential tissue segmentation with mutual exclusion:
