@@ -134,11 +134,20 @@
 - **Possible future fix**: custom Streamlit component with built-in keyboard handling
 
 **2. Dead code cleanup** (154 lines removed)
-- `app/visualization.py`: removed `fig_to_base64()`, `plot_threshold_evolution()`, commented-out scale bar block, unused `base64` import
-- `app/main.py`: removed `save_mask_as_nifti()`, unused `nibabel` import, dead visualization imports
-- `app/dicom_utils.py`: removed `create_metal_mask_from_rtstruct()` (legacy RTSTRUCT loading), unused `polygon2mask` import
-- `app/body_mask.py`: removed `constrain_to_body()` (one-liner never called)
-- `app/core/metal_detection.py`: removed unused `Callable` from typing import
+
+Removed functions (all confirmed zero callers across codebase):
+
+| Function | File | What it did | Why safe to remove |
+|----------|------|-------------|-------------------|
+| `fig_to_base64()` | `visualization.py` | Converted matplotlib figure to base64 string for HTML embedding | Replaced by `fig_to_png_bytes()` which returns raw bytes for `st.image()` |
+| `plot_threshold_evolution()` | `visualization.py` | Plotted a line chart of adaptive thresholds across slices | Never wired into any UI tab; threshold data is shown as text in col2 instead |
+| `save_mask_as_nifti()` | `main.py` | Saved a single binary mask as NIFTI via nibabel | `save_all_contours_as_nifti()` in `contour_operations.py` handles all NIFTI export |
+| `create_metal_mask_from_rtstruct()` | `dicom_utils.py` | Created metal mask from RTSTRUCT polygon contours (legacy workflow where user imported existing contours) | App now auto-detects metal via star profiles; RTSTRUCT is only used for *export*, not import |
+| `constrain_to_body()` | `body_mask.py` | One-liner: `return mask & body_mask` | Callers just do the `&` operation inline (e.g., `main.py:932`) |
+
+Other cleanup:
+- **Commented-out scale bar** (19 lines in `visualization.py`): drew a 1cm reference bar on the overlay image. Was disabled with `# Scale bar disabled for now` — removed entirely rather than leaving dead comments
+- **Unused imports**: `base64` (only used by dead `fig_to_base64`), `nibabel as nib` (only used by dead `save_mask_as_nifti`), `polygon2mask` from skimage (only used by dead `create_metal_mask_from_rtstruct`), `Callable` from typing (never referenced in metal_detection.py)
 
 ### Files Modified (Session 4)
 - `app/main.py` — `st.rerun()` after detection/segmentation, removed held-key JS, dead imports/functions
