@@ -133,5 +133,16 @@
 - **All JS removed** — slider works with single arrow key presses only
 - **Possible future fix**: custom Streamlit component with built-in keyboard handling
 
+**2. Dead code cleanup** (154 lines removed)
+- `app/visualization.py`: removed `fig_to_base64()`, `plot_threshold_evolution()`, commented-out scale bar block, unused `base64` import
+- `app/main.py`: removed `save_mask_as_nifti()`, unused `nibabel` import, dead visualization imports
+- `app/dicom_utils.py`: removed `create_metal_mask_from_rtstruct()` (legacy RTSTRUCT loading), unused `polygon2mask` import
+- `app/body_mask.py`: removed `constrain_to_body()` (one-liner never called)
+- `app/core/metal_detection.py`: removed unused `Callable` from typing import
+
 ### Files Modified (Session 4)
-- `app/main.py` — added `st.rerun()` after detection/segmentation, removed all held-key JS attempts
+- `app/main.py` — `st.rerun()` after detection/segmentation, removed held-key JS, dead imports/functions
+- `app/visualization.py` — removed 2 dead functions, commented-out scale bar, unused import
+- `app/dicom_utils.py` — removed dead RTSTRUCT function and import
+- `app/body_mask.py` — removed dead `constrain_to_body()`
+- `app/core/metal_detection.py` — removed unused `Callable` import
