@@ -4,7 +4,6 @@ from matplotlib.patches import Patch, Rectangle
 from matplotlib.lines import Line2D
 from PIL import Image
 import io
-import base64
 
 
 def fast_render_slice(ct_slice, window_center=50, window_width=400):
@@ -55,26 +54,6 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
     # Display base CT image
     ax.imshow(ct_slice, cmap='gray', vmin=-150, vmax=250)
     ax.axis('off')
-
-    # Scale bar disabled for now
-    # if spacing is not None:
-    #     # spacing is (z, y, x) in mm/pixel. Use y for row spacing.
-    #     pixel_spacing_y = spacing[1]
-    #     scale_bar_length_pixels = 10 / pixel_spacing_y # 10mm = 1cm
-    #
-    #     # Position in the bottom-left area.
-    #     # Y position is for the text, to have the bar above it.
-    #     y_pos = ct_slice.shape[0] * 0.85
-    #     x_pos = ct_slice.shape[1] * 0.1
-    #
-    #     # Draw the text "1 cm"
-    #     ax.text(x_pos + scale_bar_length_pixels / 2, y_pos, '1 cm', color='white',
-    #             ha='center', va='center', fontsize=10)
-    #
-    #     # Draw the scale bar above the text
-    #     bar_y_pos = y_pos + 10
-    #     bar_height = 4
-    #     ax.add_patch(Rectangle((x_pos, bar_y_pos), scale_bar_length_pixels, bar_height, color='white'))
 
     # Define colors for each category - high contrast for visibility
     colors = {
@@ -165,16 +144,6 @@ def create_histogram(hu_values, region_name, color='blue'):
     plt.tight_layout()
     
     return fig
-
-
-def fig_to_base64(fig):
-    """Convert matplotlib figure to base64 string for web display."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-    buf.seek(0)
-    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
-    plt.close(fig)
-    return img_base64
 
 
 def fig_to_png_bytes(fig, dpi=300):
@@ -377,44 +346,6 @@ def create_multi_slice_view(ct_volume, masks_dict, slice_indices, roi_bounds=Non
     plt.tight_layout()
     return fig
 
-
-def plot_threshold_evolution(slice_thresholds):
-    """
-    Plot how thresholds change across slices.
-    
-    Args:
-        slice_thresholds: List of dictionaries with slice and threshold info
-        
-    Returns:
-        matplotlib figure
-    """
-    fig = plt.figure(figsize=(10, 6))
-    
-    slices = []
-    lower_thresholds = []
-    upper_thresholds = []
-    
-    for item in slice_thresholds:
-        if item['thresholds']:
-            slices.append(item['slice'])
-            lower_thresholds.append(item['thresholds'][0])
-            upper_thresholds.append(item['thresholds'][1])
-    
-    if slices:
-        plt.plot(slices, lower_thresholds, 'b-', label='Lower Threshold', marker='o')
-        plt.plot(slices, upper_thresholds, 'r-', label='Upper Threshold', marker='s')
-        
-        plt.fill_between(slices, lower_thresholds, upper_thresholds, 
-                        alpha=0.3, color='gray', label='Metal HU Range')
-    
-    plt.xlabel('Slice Number')
-    plt.ylabel('HU Value')
-    plt.title('Adaptive Threshold Values Across Slices')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    
-    return fig
 
 
 def visualize_discrimination_slice(ct_slice, bone_mask, artifact_mask, confidence_map, slice_idx):

@@ -1,8 +1,6 @@
 import numpy as np
 import os
 import pydicom
-from skimage.draw import polygon2mask
-
 
 def load_dicom_series_to_hu(dicom_dir):
     """
@@ -59,62 +57,3 @@ def load_dicom_series_to_hu(dicom_dir):
     }
 
 
-def create_metal_mask_from_rtstruct(rtstruct_path, ct_spatial_meta, slice_index, implant_roi_names):
-    """
-    Creates a boolean mask for a specific slice from an RTSTRUCT file.
-
-    Args:
-        rtstruct_path: Path to the DICOM RTSTRUCT file
-        ct_spatial_meta: The spatial metadata from loading function
-        slice_index: The index of the slice to generate the mask for
-        implant_roi_names: List of possible names for the implant contours
-
-    Returns:
-        2D boolean numpy array representing the combined mask, or None
-    """
-    rtstruct = pydicom.dcmread(rtstruct_path)
-    slice_z_pos = ct_spatial_meta['slice_z_positions'][slice_index]
-    slice_shape = (ct_spatial_meta['shape'][1], ct_spatial_meta['shape'][2])
-    origin = ct_spatial_meta['origin']
-    spacing = ct_spatial_meta['spacing']
-
-    combined_mask = np.zeros(slice_shape, dtype=bool)
-
-    # Find the ROI Number(s) corresponding to implant names
-    roi_numbers = []
-    for roi in rtstruct.StructureSetROISequence:
-        if any(name.lower() in roi.ROIName.lower() for name in implant_roi_names):
-            roi_numbers.append(roi.ROINumber)
-
-    if not roi_numbers:
-        print(f"Warning: No contours found with names matching {implant_roi_names}")
-        return None
-
-    # Loop through all contours and find the ones matching ROI number(s)
-    for roi_contour in rtstruct.ROIContourSequence:
-        if roi_contour.ReferencedROINumber in roi_numbers:
-            if not hasattr(roi_contour, 'ContourSequence'):
-                continue
-            
-            # Loop through each contour slice
-            for contour_slice in roi_contour.ContourSequence:
-                contour_data = np.array(contour_slice.ContourData).reshape(-1, 3)
-                contour_z = contour_data[0, 2]
-
-                # Check if the contour is on the CT slice we are analyzing
-                if np.isclose(contour_z, slice_z_pos):
-                    # Convert world coordinates (mm) to pixel coordinates
-                    pixel_coords = contour_data[:, :2]
-                    pixel_coords[:, 0] = (pixel_coords[:, 0] - origin[0]) / spacing[1]
-                    pixel_coords[:, 1] = (pixel_coords[:, 1] - origin[1]) / spacing[0]
-                    pixel_coords = pixel_coords[:, [1, 0]]  # Swap to (row, col)
-
-                    # Create a mask from the polygon and merge it
-                    poly_mask = polygon2mask(slice_shape, pixel_coords)
-                    combined_mask |= poly_mask
-
-    if not np.any(combined_mask):
-        print(f"Warning: Matching contours were found, but none were on slice {slice_index} (Z={slice_z_pos:.2f}mm)")
-        return None
-
-    return combined_mask

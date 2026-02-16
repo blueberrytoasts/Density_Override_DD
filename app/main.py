@@ -2,7 +2,6 @@ import streamlit as st
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
-import nibabel as nib
 import time
 
 from dicom_utils import load_dicom_series_to_hu, create_metal_mask_from_rtstruct
@@ -23,17 +22,12 @@ def create_affine_from_dicom_meta(metadata):
     affine[2, 3] = origin[2]   # z origin
     return affine
 
-def save_mask_as_nifti(mask, affine, filepath):
-    """Save binary mask as NIFTI file."""
-    img = nib.Nifti1Image(mask.astype(np.uint8), affine)
-    nib.save(img, filepath)
-    return filepath
 from contour_operations import (create_bright_artifact_mask, create_dark_artifact_mask,
                                create_bone_mask, save_all_contours_as_nifti, refine_mask,
                                create_russian_doll_segmentation, create_sequential_masks)
-from visualization import (create_overlay_image, create_histogram, fig_to_base64,
+from visualization import (create_overlay_image, create_histogram,
                           fig_to_png_bytes, fast_render_slice, create_multi_slice_view,
-                          visualize_star_profiles, plot_threshold_evolution,
+                          visualize_star_profiles,
                           visualize_discrimination_slice, create_histogram_with_thresholds,
                           create_threshold_preview)
 from config import ThresholdConfig, init_threshold_state, reset_thresholds, validate_all_thresholds

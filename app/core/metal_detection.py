@@ -4,7 +4,7 @@ Consolidates all metal detection algorithms into a single interface.
 """
 
 import numpy as np
-from typing import Dict, Tuple, Optional, List, Callable
+from typing import Dict, Tuple, Optional, List
 from scipy.ndimage import label, binary_dilation, generate_binary_structure, binary_fill_holes
 from scipy.ndimage import gaussian_filter, distance_transform_edt
 from enum import Enum

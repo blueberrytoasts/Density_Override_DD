@@ -58,17 +58,3 @@ def create_body_mask(ct_volume, air_threshold=-300):
             processed_mask = labeled_3d == largest_3d
     
     return processed_mask
-
-
-def constrain_to_body(mask, body_mask):
-    """
-    Constrain a mask to only include voxels within the body.
-    
-    Args:
-        mask: Binary mask to constrain
-        body_mask: Body region mask
-        
-    Returns:
-        Constrained mask
-    """
-    return mask & body_mask
