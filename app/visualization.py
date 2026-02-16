@@ -49,14 +49,11 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
     Returns:
         matplotlib figure object
     """
-    fig = plt.figure(figsize=(10, 10))
-    ax = plt.gca()
-    
+    fig = plt.figure(figsize=(10, 10), facecolor='black')
+    ax = fig.add_axes([0, 0, 1, 1])  # fill entire figure, no padding
+
     # Display base CT image
     ax.imshow(ct_slice, cmap='gray', vmin=-150, vmax=250)
-    
-    title = f"CT Slice {slice_index} with Characterized Regions" if slice_index else "CT Slice with Characterized Regions"
-    ax.set_title(title)
     ax.axis('off')
 
     # Scale bar disabled for now
@@ -135,36 +132,6 @@ def create_overlay_image(ct_slice, masks, roi_boundaries=None, slice_index=None,
                                   linestyle='--', label='Auto ROI'))
         roi_drawn = True
     
-    # Create legend using custom names if provided
-    if custom_names is None:
-        custom_names = {
-            'metal': 'Metal Implant',
-            'bright_artifacts': 'Bright Artifacts (Legacy)',
-            'bright_artifact_bone': 'Bright Artifacts → Bone',
-            'bright_artifact_tissue': 'Bright Artifacts → Tissue',
-            'bright_artifacts_mild': 'Bright Artifacts (Mild)',
-            'bright_artifacts_moderate': 'Bright Artifacts (Moderate)',
-            'bright_artifacts_severe': 'Bright Artifacts (Severe)',
-            'dark_artifacts': 'Dark Artifacts (Legacy)',
-            'dark_artifact_bone': 'Dark Artifacts → Bone',
-            'dark_artifact_tissue': 'Dark Artifacts → Tissue',
-            'bone': 'Bone'
-        }
-    
-    # Only add legend items for masks that are being displayed
-    legend_elements = []
-    for mask_name in masks.keys():
-        if mask_name in colors:
-            label = custom_names.get(mask_name, mask_name.replace('_', ' ').title())
-            legend_elements.append(
-                Patch(facecolor=colors[mask_name], edgecolor='black', label=label)
-            )
-    if roi_drawn:
-        legend_elements.append(Patch(facecolor='none', edgecolor='lime', lw=2, ls='--', label='Auto ROI'))
-    
-    ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1, 1))
-    plt.tight_layout(rect=[0, 0, 0.85, 1])
-    
     return fig
 
 
@@ -223,7 +190,7 @@ def fig_to_png_bytes(fig, dpi=300):
     """
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight',
-                facecolor='white', edgecolor='none')
+                facecolor=fig.get_facecolor(), edgecolor='none')
     buf.seek(0)
     return buf.getvalue()
 

@@ -114,7 +114,6 @@ streamlit run main.py --server.address localhost --server.port 8501
 │   ├── visualization.py     # Advanced plotting and visualization
 │   ├── config.py            # Configuration management
 │   ├── body_mask.py         # Body masking utilities
-│   ├── cornerstone_viewer.py # Medical image viewer integration
 │   └── core/                # Core algorithms
 │       ├── metal_detection.py # Metal detection algorithms
 │       └── discrimination.py  # Artifact discrimination

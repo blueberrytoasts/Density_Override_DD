@@ -103,7 +103,10 @@ st.markdown("---")
 with st.sidebar:
     st.header("Settings")
 
-    # View mode toggle
+    # View mode toggle (check for pending switch from detection/segmentation)
+    # Must set before widget renders — widget reads session state on init
+    if st.session_state.pop("_switch_to_overlays", False):
+        st.session_state.view_mode = "Overlays"
     st.radio(
         "View Mode",
         ["Fast (CT Only)", "Overlays"],
@@ -695,7 +698,7 @@ def slice_viewer():
     """Fragment-isolated slice viewer. Only re-renders on slice/view changes."""
     max_slice = st.session_state.ct_volume.shape[0] - 1
 
-    # Slice slider (use arrow keys or mouse wheel on image to navigate)
+    # Slice slider (click slider then use arrow keys to navigate)
     current_slice = st.slider(
         "Select Slice",
         min_value=0,
@@ -705,75 +708,6 @@ def slice_viewer():
         key="slice_slider"
     )
     st.session_state.current_slice = current_slice
-
-    # Slice navigation: inject script into PARENT page context (not iframe)
-    # so it can directly access the slider DOM and dispatch events properly.
-    st.components.v1.html("""
-    <script>
-    (function() {
-        if (window.parent._sliceNavReady) return;
-        var s = window.parent.document.createElement('script');
-        s.textContent = `
-        (function() {
-            if (window._sliceNavReady) return;
-            window._sliceNavReady = true;
-
-            var nativeSetter = Object.getOwnPropertyDescriptor(
-                HTMLInputElement.prototype, 'value').set;
-
-            function getSlider() {
-                var sidebar = document.querySelector('[data-testid="stSidebar"]');
-                var all = document.querySelectorAll('input[type="range"]');
-                for (var i = 0; i < all.length; i++) {
-                    if (!sidebar || !sidebar.contains(all[i])) return all[i];
-                }
-                return null;
-            }
-
-            function stepSlider(delta) {
-                var sl = getSlider();
-                if (!sl) return;
-                var v = Math.min(parseInt(sl.max),
-                    Math.max(parseInt(sl.min), parseInt(sl.value) + delta));
-                nativeSetter.call(sl, v);
-                sl.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-
-            // Keyboard: throttled arrow keys (works without slider focus)
-            var lastKey = 0;
-            document.addEventListener('keydown', function(e) {
-                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-                var now = Date.now();
-                if (now - lastKey < 120) { e.preventDefault(); return; }
-                if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-                    e.preventDefault(); lastKey = now; stepSlider(-1);
-                } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-                    e.preventDefault(); lastKey = now; stepSlider(1);
-                }
-            });
-
-            // Mouse wheel on image area
-            document.addEventListener('wheel', function(e) {
-                if (!e.target.closest('img, [data-testid="stImage"]')) return;
-                e.preventDefault();
-                stepSlider(e.deltaY > 0 ? 1 : -1);
-            }, { passive: false });
-
-            // Live slider: debounced updates during drag
-            var timer;
-            document.addEventListener('input', function(e) {
-                if (e.target.type !== 'range') return;
-                clearTimeout(timer);
-                timer = setTimeout(function() {
-                    e.target.dispatchEvent(new Event('change', { bubbles: true }));
-                }, 150);
-            }, true);
-        })();
-        `;
-        window.parent.document.head.appendChild(s);
-    })();
-    </script>
-    """, height=0)
 
     # Get current slice data
     ct_slice = st.session_state.ct_volume[current_slice]
@@ -832,9 +766,11 @@ def slice_viewer():
             custom_names=st.session_state.contour_names,
             spacing=st.session_state.ct_metadata['spacing']
         )
-        st.pyplot(fig)
-        # Export button for overlay image
-        png_bytes = fig_to_png_bytes(fig, dpi=300)
+        # Render to image bytes so we can use st.image (same size as fast mode)
+        png_bytes = fig_to_png_bytes(fig, dpi=150)
+        plt.close(fig)
+        st.image(png_bytes, caption=f"Slice {current_slice + 1}", width="stretch")
+        # Export button (re-render at high DPI for export quality)
         patient_name = st.session_state.get('selected_patient', 'patient')
         st.download_button(
             label="Export Overlay as PNG",
@@ -842,7 +778,6 @@ def slice_viewer():
             file_name=f"{patient_name}_slice_{current_slice}_overlay.png",
             mime="image/png"
         )
-        plt.close()
 
 
 # Main content area
@@ -884,17 +819,9 @@ if st.session_state.ct_volume is not None:
                             st.session_state.metal_detection_result = result
                             st.session_state.masks['metal'] = result['mask']
 
+                            st.session_state._switch_to_overlays = True
                             metal_count = np.sum(result['mask'])
-                            st.success(f"Metal detection complete! Found {metal_count:,} metal voxels")
-                            if 'analysis' in result and result['analysis']:
-                                thresh = result['analysis']['threshold_used']
-                                extent = result['analysis']['extent_voxels']
-                                st.info(f"Auto-detected threshold: {thresh:.0f} HU")
-                                st.info(f"3D extent: {extent['z']}×{extent['y']}×{extent['x']} voxels")
-                            if 'individual_regions' in result:
-                                total_regions = sum(len(regions) for regions in result['individual_regions'].values())
-                                st.info(f"Created {total_regions} focused ROI regions across {len(result['individual_regions'])} slices")
-                            st.info(f"⏱️ Metal detection took {elapsed_time:.2f} seconds.")
+                            st.toast(f"Metal detected: {metal_count:,} voxels in {elapsed_time:.1f}s")
                         else:
                             st.error("No metal implant detected")
             
@@ -1049,24 +976,7 @@ if st.session_state.ct_volume is not None:
                                         'confidence_map': disc_result['confidence_map']
                                     }
 
-                                    st.success("Star profile discrimination complete!")
-
-                                    # Show statistics with tissue breakdown
-                                    bone_voxels = np.sum(disc_result['bone_mask'])
-                                    artifact_bone_voxels = np.sum(disc_result.get('artifact_bone_mask', 0))
-                                    artifact_tissue_voxels = np.sum(disc_result.get('artifact_tissue_mask', 0))
-                                    artifact_voxels = artifact_bone_voxels + artifact_tissue_voxels
-                                    total_bright = bone_voxels + artifact_voxels
-
-                                    if total_bright > 0:
-                                        st.info(f"📊 Classified {total_bright:,} bright voxels (using HU range {bone_low}-{bone_high} HU):")
-                                        st.info(f"  • Bone tissue: {bone_voxels:,} ({100*bone_voxels/total_bright:.1f}%)")
-                                        st.info(f"  • Artifacts over bone: {artifact_bone_voxels:,} ({100*artifact_bone_voxels/total_bright:.1f}%)")
-                                        st.info(f"  • Artifacts over tissue: {artifact_tissue_voxels:,} ({100*artifact_tissue_voxels/total_bright:.1f}%)")
-
-                                        # Show confidence stats
-                                        conf_mean = np.mean(disc_result['confidence_map'][bright_mask]) if np.any(bright_mask) else 0
-                                        st.info(f"  • Average confidence: {conf_mean:.2f}")
+                                    st.toast("Star profile discrimination complete!")
 
                             elif segmentation_method == "Context-Aware Artifact Detection (Best for Low HU Artifacts)":
                                 # Use context-aware bright artifact detection
@@ -1096,20 +1006,7 @@ if st.session_state.ct_volume is not None:
                                         if mask is not None:
                                             st.session_state.masks[mask_name] = mask.astype(bool) if hasattr(mask, 'astype') else mask
                                     
-                                    st.success("Context-aware artifact detection complete!")
-                                    
-                                    # Show context-aware statistics
-                                    if 'bright_artifacts_mild' in st.session_state.masks:
-                                        mild_voxels = np.sum(st.session_state.masks['bright_artifacts_mild'])
-                                        moderate_voxels = np.sum(st.session_state.masks['bright_artifacts_moderate']) 
-                                        severe_voxels = np.sum(st.session_state.masks['bright_artifacts_severe'])
-                                        total_context = mild_voxels + moderate_voxels + severe_voxels
-                                        
-                                        if total_context > 0:
-                                            st.info(f"Context-aware detection found {total_context:,} bright artifacts:")
-                                            st.info(f"• Mild: {mild_voxels:,} ({100*mild_voxels/total_context:.1f}%)")
-                                            st.info(f"• Moderate: {moderate_voxels:,} ({100*moderate_voxels/total_context:.1f}%)")  
-                                            st.info(f"• Severe: {severe_voxels:,} ({100*severe_voxels/total_context:.1f}%)")
+                                    st.toast("Context-aware artifact detection complete!")
                                 else:
                                     st.warning("Context-aware segmentation returned no results")
                             
@@ -1121,12 +1018,7 @@ if st.session_state.ct_volume is not None:
                                 st.session_state.segmentation_info['confidence_map'] = segmentation_result.get('confidence_map')
                                 st.session_state.segmentation_info['distance_map'] = segmentation_result.get('distance_map')
                                 
-                                st.success("Smart artifact segmentation complete!")
-                                
-                                # Show statistics
-                                bone_voxels = np.sum(st.session_state.masks['bone']) if 'bone' in st.session_state.masks else 0
-                                bright_voxels = np.sum(st.session_state.masks['bright_artifacts']) if 'bright_artifacts' in st.session_state.masks else 0
-                                st.info(f"Discriminated {bone_voxels:,} bone voxels from {bright_voxels:,} bright artifact voxels")
+                                st.toast("Smart artifact segmentation complete!")
                                 
                             else:
                                 # Legacy method
@@ -1160,77 +1052,103 @@ if st.session_state.ct_volume is not None:
                                 st.session_state.masks['dark_artifacts'] = refine_mask(dark_mask)
                                 st.session_state.masks['bone'] = refine_mask(bone_mask)
                                 
-                                st.success("Legacy artifact segmentation complete!")
+                                st.toast("Legacy artifact segmentation complete!")
 
+                            st.session_state._switch_to_overlays = True
                             end_time = time.time()
                             elapsed_time = end_time - start_time
-                            st.info(f"⏱️ Segmentation took {elapsed_time:.2f} seconds.")
+                            st.toast(f"Segmentation complete in {elapsed_time:.1f}s")
             
             # Slice viewer fragment (navigation + rendering, isolated rerun)
             slice_viewer()
-        
+
         with col2:
-            st.subheader("Analysis Results")
             current_slice = st.session_state.current_slice
 
             if st.session_state.metal_detection_result:
-                # Show detected thresholds
-                st.markdown("**Adaptive Thresholds**")
-
-                # Get per-slice threshold if available (now a dict: slice_index -> threshold)
+                # Adaptive Thresholds
                 slice_thresholds = st.session_state.metal_detection_result.get('threshold_evolution', {})
                 avg_threshold = st.session_state.metal_detection_result.get('threshold', None)
 
+                _thresh_lines = []
                 if slice_thresholds and current_slice in slice_thresholds:
-                    slice_threshold = slice_thresholds[current_slice]
-                    st.text(f"Metal (this slice): >{slice_threshold:.0f} HU")
+                    _thresh_lines.append(f"Metal (slice): >{slice_thresholds[current_slice]:.0f} HU")
                     if avg_threshold:
-                        st.text(f"Metal (avg all slices): >{avg_threshold:.0f} HU")
+                        _thresh_lines.append(f"Metal (avg): >{avg_threshold:.0f} HU")
                 elif avg_threshold:
-                    st.text(f"Metal: >{avg_threshold:.0f} HU (no metal on this slice)")
-                else:
-                    st.text("Metal: Default thresholds")
+                    _thresh_lines.append(f"Metal: >{avg_threshold:.0f} HU")
 
-                # Get threshold values from session state (avoid undefined variable errors)
+                # Get threshold values from session state
                 if 'russian_doll' in st.session_state.thresholds:
-                    bright_low_val = st.session_state.thresholds['russian_doll'].get('bright_min', 800)
-                    bright_high_val = st.session_state.thresholds['russian_doll'].get('bright_max', 3500)
-                    dark_high_val = st.session_state.thresholds['russian_doll'].get('dark_max', -150)
-                    bone_low_val = st.session_state.thresholds['russian_doll'].get('bone_min', 150)
-                    bone_high_val = st.session_state.thresholds['russian_doll'].get('bone_max', 1500)
+                    _t = st.session_state.thresholds['russian_doll']
                 elif 'legacy' in st.session_state.thresholds:
-                    bright_low_val = st.session_state.thresholds['legacy'].get('bright_min', 500)
-                    bright_high_val = st.session_state.thresholds['legacy'].get('bright_max', 3000)
-                    dark_high_val = st.session_state.thresholds['legacy'].get('dark_max', -150)
-                    bone_low_val = st.session_state.thresholds['legacy'].get('bone_min', 150)
-                    bone_high_val = st.session_state.thresholds['legacy'].get('bone_max', 1500)
+                    _t = st.session_state.thresholds['legacy']
                 else:
-                    # Default values
-                    bright_low_val = 800
-                    bright_high_val = 3500
-                    dark_high_val = -150
-                    bone_low_val = 150
-                    bone_high_val = 1500
+                    _t = {}
+                _thresh_lines.append(f"Bright: {_t.get('bright_min', 800)} - {_t.get('bright_max', 3500)} HU")
+                _thresh_lines.append(f"Dark: < {_t.get('dark_max', -150)} HU")
+                _thresh_lines.append(f"Bone: {_t.get('bone_min', 150)} - {_t.get('bone_max', 1500)} HU")
 
-                st.text(f"Bright: {bright_low_val} - {bright_high_val} HU")
-                st.text(f"Dark: < {dark_high_val} HU")
-                st.text(f"Bone: {bone_low_val} - {bone_high_val} HU")
-            
-            # Display pixel counts
+                st.markdown(
+                    '<p style="color:#4a9eff;font-size:0.9em;font-weight:600;margin:0 0 4px 0;">Adaptive Thresholds</p>'
+                    + '<br>'.join(f'<span style="font-size:0.8em;color:#aaa;">{l}</span>' for l in _thresh_lines),
+                    unsafe_allow_html=True
+                )
+
+            # Segmentation Statistics
             if st.session_state.masks:
-                st.markdown("**Segmentation Statistics**")
+                _stat_lines = []
                 for mask_name, mask in st.session_state.masks.items():
                     if isinstance(mask, np.ndarray):
                         if mask.ndim == 3:
                             count = np.sum(mask[current_slice])
                             total = np.sum(mask)
-                            st.text(f"{mask_name}: {count:,} pixels (slice) / {total:,} voxels (total)")
+                            _stat_lines.append(f"{mask_name}: {count:,} px / {total:,} total")
                         else:
-                            count = np.sum(mask)
-                            st.text(f"{mask_name}: {count:,} pixels")
+                            _stat_lines.append(f"{mask_name}: {np.sum(mask):,} px")
+                if _stat_lines:
+                    st.markdown(
+                        '<p style="color:#4a9eff;font-size:0.9em;font-weight:600;margin:12px 0 4px 0;">Segmentation Statistics</p>'
+                        + '<br>'.join(f'<span style="font-size:0.8em;color:#aaa;">{l}</span>' for l in _stat_lines),
+                        unsafe_allow_html=True
+                    )
             
+            # Legend (only in overlay mode with masks)
+            view_mode = st.session_state.get("view_mode", "Fast (CT Only)")
+            if view_mode != "Fast (CT Only)" and st.session_state.masks:
+                _legend_colors = {
+                    'metal': '#FF0000', 'dark_artifacts': '#FF00FF',
+                    'bone': '#00CCFF', 'bright_artifacts': '#FFFF00',
+                    'bright_artifact_bone': '#FF8000', 'bright_artifact_tissue': '#00FF00',
+                }
+                _legend_names = st.session_state.contour_names or {
+                    'metal': 'Metal Implant', 'dark_artifacts': 'Dark Artifacts',
+                    'bone': 'Bone', 'bright_artifacts': 'Bright Artifacts',
+                    'bright_artifact_bone': 'Bright Artifact Bone',
+                    'bright_artifact_tissue': 'Bright Artifact Tissue',
+                }
+                _items = []
+                for k in st.session_state.masks:
+                    if k in _legend_colors:
+                        _label = _legend_names.get(k, k.replace('_', ' ').title())
+                        _items.append(
+                            f'<div style="display:flex;align-items:center;gap:4px;">'
+                            f'<span style="display:inline-block;width:12px;height:12px;min-width:12px;'
+                            f'background:{_legend_colors[k]};border:1px solid #555;"></span>'
+                            f'<span style="font-size:0.85em;">{_label}</span></div>'
+                        )
+                if _items:
+                    st.markdown(
+                        '<div style="display:flex;flex-direction:column;gap:3px;padding:8px 0;'
+                        'border-top:1px solid #333;margin-top:8px;">'
+                        + ''.join(_items)
+                        + '</div>',
+                        unsafe_allow_html=True
+                    )
+
             # Show histograms
             if st.session_state.masks and st.checkbox("Show Intensity Histograms"):
+                ct_slice = st.session_state.ct_volume[current_slice]
                 st.markdown("**Intensity Distributions**")
                 
                 colors = {

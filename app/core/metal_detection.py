@@ -501,10 +501,10 @@ class MetalDetector:
         y_min, y_max = roi_bounds.get('y_min', 0), roi_bounds.get('y_max', slice_data.shape[0])
         x_min, x_max = roi_bounds.get('x_min', 0), roi_bounds.get('x_max', slice_data.shape[1])
 
-        # Adaptive metal filter: 50% of max HU in slice
+        # Adaptive metal filter: 75% of max HU in slice
         # This replaces hardcoded 2500 HU and adapts to any metal type
         max_slice_hu = np.max(slice_data)
-        metal_filter_threshold = max_slice_hu * 0.5
+        metal_filter_threshold = max_slice_hu * 0.75
 
         # Calculate intermediate points for 16-point star
         y_mid = (y_min + y_max) // 2
@@ -553,7 +553,7 @@ class MetalDetector:
             peak_hu = np.max(hu_values)
 
             # Only include this line if it actually hit metal
-            # Uses adaptive threshold (50% of max HU) instead of hardcoded value
+            # Uses adaptive threshold (75% of max HU) instead of hardcoded value
             # This generalizes to any metal type (titanium, steel, tantalum, etc.)
             if peak_hu > metal_filter_threshold:
                 # Calculate FW% threshold for this profile
