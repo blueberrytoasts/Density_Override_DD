@@ -698,7 +698,7 @@ def slice_viewer():
     """Fragment-isolated slice viewer. Only re-renders on slice/view changes."""
     max_slice = st.session_state.ct_volume.shape[0] - 1
 
-    # Slice slider (click slider then use arrow keys to navigate)
+    # Slice slider (click slider then hold arrow keys to scrub)
     current_slice = st.slider(
         "Select Slice",
         min_value=0,
@@ -822,6 +822,7 @@ if st.session_state.ct_volume is not None:
                             st.session_state._switch_to_overlays = True
                             metal_count = np.sum(result['mask'])
                             st.toast(f"Metal detected: {metal_count:,} voxels in {elapsed_time:.1f}s")
+                            st.rerun()
                         else:
                             st.error("No metal implant detected")
             
@@ -1058,6 +1059,7 @@ if st.session_state.ct_volume is not None:
                             end_time = time.time()
                             elapsed_time = end_time - start_time
                             st.toast(f"Segmentation complete in {elapsed_time:.1f}s")
+                            st.rerun()
             
             # Slice viewer fragment (navigation + rendering, isolated rerun)
             slice_viewer()

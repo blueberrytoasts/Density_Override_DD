@@ -110,3 +110,28 @@
 - `app/cornerstone_viewer.py` — deleted
 - `app/core/metal_detection.py` — metal filter threshold 50% → 75%
 - `README.md` — removed cornerstone_viewer from structure
+
+---
+
+## Session 4: Auto-switch fix + held arrow key attempts (`feature/fast-slice-viewer`)
+
+### Completed
+
+**1. Fix auto-switch to Overlays on first press**
+- Added `st.rerun()` after metal detection and segmentation complete
+- Previously required two presses because the `_switch_to_overlays` flag was set after the sidebar radio had already rendered in the same script run
+- `st.rerun()` forces an immediate new run where the sidebar consumes the flag
+
+### Attempted & Reverted
+
+**Held arrow key continuous scrubbing**
+- Attempted 3 approaches, all failed:
+  1. **In-fragment refocus**: `components.v1.html` with `sl.focus()` — iframe loads too late, key repeat already lost
+  2. **Persistent MutationObserver**: injected into parent document, tracked `arrowHeld` flag, refocused slider on DOM mutations — slider DOM destruction during fragment rerun kills key repeat before observer can act
+  3. **Input→Change bridge**: dispatched `change` event on every `input` event to force Streamlit to commit each keystep — Streamlit's React wrapper doesn't respond to synthetic change events during held key
+- **Root cause**: Streamlit 1.54 slider commits on release only. Fragment rerun destroys/recreates slider DOM, killing browser key repeat. No client-side workaround found.
+- **All JS removed** — slider works with single arrow key presses only
+- **Possible future fix**: custom Streamlit component with built-in keyboard handling
+
+### Files Modified (Session 4)
+- `app/main.py` — added `st.rerun()` after detection/segmentation, removed all held-key JS attempts
