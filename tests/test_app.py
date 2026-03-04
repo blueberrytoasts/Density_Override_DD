@@ -10,7 +10,7 @@ sys.path.append('app')
 
 from pathlib import Path
 import numpy as np
-from dicom_utils import load_dicom_series_to_hu, create_metal_mask_from_rtstruct
+from dicom_utils import load_dicom_series_to_hu
 from metal_detection import detect_metal_volume, create_affine_from_dicom_meta
 from contour_operations import create_bright_artifact_mask, create_dark_artifact_mask, create_bone_mask
 import matplotlib

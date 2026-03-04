@@ -2,7 +2,7 @@ import numpy as np
 import nibabel as nib
 from scipy.ndimage import binary_erosion, binary_dilation, binary_fill_holes, generate_binary_structure, distance_transform_edt, gaussian_filter, median_filter
 from core.discrimination import ArtifactDiscriminator, DiscriminationMethod
-from body_mask import create_body_mask, constrain_to_body
+from body_mask import create_body_mask
 
 
 def calculate_metal_distance_map(metal_mask, spacing):

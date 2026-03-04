@@ -7,14 +7,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
 
 import numpy as np
 from pathlib import Path
-from dicom_utils import load_dicom_series_to_hu, create_metal_mask_from_rtstruct
-from metal_detection import (detect_metal_volume, create_affine_from_dicom_meta, 
-                            save_mask_as_nifti, detect_metal_adaptive)
+from dicom_utils import load_dicom_series_to_hu
+from metal_detection import (detect_metal_volume, create_affine_from_dicom_meta,
+                            detect_metal_adaptive)
 from contour_operations import (create_bright_artifact_mask, create_dark_artifact_mask,
                                create_bone_mask, save_all_contours_as_nifti, refine_mask)
-from visualization import (create_overlay_image, create_histogram, fig_to_base64, 
-                          create_multi_slice_view, visualize_star_profiles,
-                          plot_threshold_evolution)
+from visualization import (create_overlay_image, create_histogram,
+                          create_multi_slice_view, visualize_star_profiles)
 
 def test_all_features(patient_name="HIP1 Patient"):
     """Test all major features."""
@@ -101,11 +100,6 @@ def test_all_features(patient_name="HIP1 Patient"):
             slice_result.get('thresholds')
         )
         print(f"✓ Star profile visualization")
-    
-    # Test threshold evolution plot
-    if result.get('slice_thresholds'):
-        fig = plot_threshold_evolution(result['slice_thresholds'])
-        print(f"✓ Threshold evolution plot")
     
     # Test NIFTI export
     output_dir = Path("test_output")

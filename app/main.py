@@ -4,7 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import time
 
-from dicom_utils import load_dicom_series_to_hu, create_metal_mask_from_rtstruct
+from dicom_utils import load_dicom_series_to_hu
 from core.metal_detection import MetalDetector, MetalDetectionMethod
 from core.discrimination import ArtifactDiscriminator, DiscriminationMethod
 
