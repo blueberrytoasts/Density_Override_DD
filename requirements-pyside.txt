@@ -1,0 +1,4 @@
+# Desktop (PySide6) front-end dependencies.
+# Install on top of the base requirements.txt:
+#   pip install -r requirements.txt -r requirements-pyside.txt
+PySide6>=6.6
