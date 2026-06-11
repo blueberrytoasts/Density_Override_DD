@@ -6,21 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## CURRENT WORK STATUS
 
-### Active Branch: `feature/fast-slice-viewer`
-Fast slice viewer with `@st.fragment` isolation, two view modes (Fast CT Only / Overlays), auto-switch to overlays on detection/segmentation. Status messages use `st.toast()` to avoid pushing the image down.
+_Last reviewed: 2026-06-11. `feature/fast-slice-viewer` was fast-forward merged into `main`; `main` is the current tip and is pushed to `origin/main`._
 
-### Outstanding Issue: HU Range Sliders Non-Functional
+### HU Range Sliders — RESOLVED (now weighted, was reported broken)
 
-**Problem**: When using "Russian Doll with Star Profile Discrimination", the bone HU range sliders (`bone_low`, `bone_high`) have NO effect on segmentation results.
+The old note here claimed the `bone_low`/`bone_high` sliders had no effect. That is **no longer true** as of the `star_profile_upgrade` work now on `main`. HU is integrated as a weighted feature (Option B):
+- `main.py:~943` passes `bone_hu_low=bone_low, bone_hu_high=bone_high` into discrimination.
+- `discrimination.py:_analyze_profile_characteristics` (~704-729) scores HU with weight **±0.45** — the single largest weight (peak width ±0.35, smoothness ±0.25, gradient ±0.25). Final decision: `bone_score > 0.0` (`_classify_from_profile`, ~750).
 
-**Root Cause**: Star profile discrimination (`app/core/discrimination.py:351-625`) uses ONLY profile characteristics (peak width, smoothness, gradient) and ignores the HU range parameters.
+**Remaining design question (not a bug):** HU is a weighted vote, not a hard gate. A pixel inside the HU range can still be classified as artifact if the shape features outvote it. If a strict cutoff is desired, switch to **Option A**: `bone = (bone_score > 0) AND (bone_low <= HU <= bone_high)`.
 
-**Fix Options**:
-- **Option A (Hybrid)**: `bone = (bone_score > 0) AND (bone_low <= HU <= bone_high)`
-- **Option B (Weighted)**: Add HU as 4th feature in bone_score calculation
-- **Option C (Two-stage)**: HU filter first, then profile analysis
+### Outstanding Bug: Per-Component Metal ROIs Overwritten (Priority: HIGH)
 
-**Workaround**: Use "Russian Doll with Distance-Based Discrimination" if HU control is needed.
+**Problem:** `metal_detection.py` correctly finds separate connected metal components per slice (good for bilateral implants), then throws that work away.
+
+**Where:** `app/core/metal_detection.py` lines ~311-314 and again ~371-373. After building a single "conservative" bounding box, it computes `center = np.mean(ALL metal voxels)`, wipes `individual_regions`, and refills every slice with that one box.
+
+**Impact:** For bilateral implants (e.g. HIP3) the averaged centroid lands *between* the two hips and the single box spans both — reintroducing the bilateral-capture problem the per-component logic was meant to prevent. Unilateral cases (HIP4) look fine because mean ≈ true center, which is why it hides.
+
+**Fix direction:** Keep `individual_regions[z]` as the per-component list end-to-end; let `roi_bounds` stay only for overall display/extent.
 
 ### What's Working
 - Fast slice viewer: PIL-based rendering (~10ms) via `fast_render_slice()` in `app/visualization.py`
