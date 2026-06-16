@@ -16,7 +16,9 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QPainter
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsPixmapItem
 
-from pyside_app.hu_render import hu_to_qimage, auto_window_level
+from pyside_app.hu_render import (
+    hu_to_qimage, hu_to_qimage_with_overlay, auto_window_level,
+)
 
 
 class SliceView(QGraphicsView):
@@ -37,6 +39,7 @@ class SliceView(QGraphicsView):
         self._scene.addItem(self._pixmap_item)
 
         self._volume: np.ndarray | None = None
+        self._mask: np.ndarray | None = None  # 3D overlay mask, same shape as volume
         self._index = 0
         self._center = 40.0
         self._width = 400.0
@@ -56,11 +59,26 @@ class SliceView(QGraphicsView):
     def set_volume(self, volume: np.ndarray) -> None:
         """Load a new volume (z, y, x), reset to the middle slice + auto W/L."""
         self._volume = volume
+        self._mask = None  # a new volume invalidates any previous overlay
         self._index = volume.shape[0] // 2
         self._center, self._width = auto_window_level(volume)
         self._render(fit=True)
         self.slice_changed.emit(self._index, volume.shape[0])
         self.window_changed.emit(self._center, self._width)
+
+    def set_mask(self, mask: np.ndarray | None) -> None:
+        """Set (or clear, with None) the 3D overlay mask and redraw.
+
+        ``mask`` must share the volume's (z, y, x) shape. Passing None removes
+        the overlay and returns to plain grayscale.
+        """
+        if mask is not None and self._volume is not None:
+            if mask.shape != self._volume.shape:
+                raise ValueError(
+                    f"mask shape {mask.shape} != volume shape {self._volume.shape}"
+                )
+        self._mask = mask
+        self._render()
 
     def set_slice(self, index: int) -> None:
         if self._volume is None:
@@ -91,7 +109,13 @@ class SliceView(QGraphicsView):
     def _render(self, fit: bool = False) -> None:
         if self._volume is None:
             return
-        image = hu_to_qimage(self._volume[self._index], self._center, self._width)
+        slice_hu = self._volume[self._index]
+        if self._mask is None:
+            image = hu_to_qimage(slice_hu, self._center, self._width)
+        else:
+            image = hu_to_qimage_with_overlay(
+                slice_hu, self._center, self._width, self._mask[self._index]
+            )
         self._pixmap_item.setPixmap(QPixmap.fromImage(image))
         self._scene.setSceneRect(self._pixmap_item.boundingRect())
         if fit:

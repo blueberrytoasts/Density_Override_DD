@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from pyside_app.slice_view import SliceView
 from pyside_app.dicom_loader import DicomLoadWorker
+from pyside_app.metal_worker import MetalDetectionWorker
 
 
 class MainWindow(QMainWindow):
@@ -28,6 +29,18 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: DicomLoadWorker | None = None
 
+        # Separate thread/worker refs for detection so a detect run can't
+        # clobber an in-flight load (and vice versa).
+        self._detect_thread: QThread | None = None
+        self._detect_worker: MetalDetectionWorker | None = None
+
+        # Held so detection (a separate user action) can reuse them after load.
+        self._volume = None
+        self._spacing = None
+
+        # {slice_index: threshold_HU} from the last detection; empty until then.
+        self._slice_thresholds: dict[int, float] = {}
+
         # --- central viewer ------------------------------------------------
         self._view = SliceView()
 
@@ -38,12 +51,16 @@ class MainWindow(QMainWindow):
         self._slice_label.setMinimumWidth(110)
         self._wl_label = QLabel("W/L: -/-")
         self._wl_label.setMinimumWidth(160)
+        # Metal threshold for the slice currently shown (per-slice, not the avg).
+        self._thr_label = QLabel("Metal thr: -")
+        self._thr_label.setMinimumWidth(150)
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Slice:"))
         controls.addWidget(self._slice_slider, stretch=1)
         controls.addWidget(self._slice_label)
         controls.addWidget(self._wl_label)
+        controls.addWidget(self._thr_label)
 
         layout = QVBoxLayout()
         layout.addWidget(self._view, stretch=1)
@@ -58,6 +75,11 @@ class MainWindow(QMainWindow):
         self._load_btn = QPushButton("Load Patient…")
         self._load_btn.clicked.connect(self._on_load_clicked)
         toolbar.addWidget(self._load_btn)
+
+        self._detect_btn = QPushButton("Detect Metal")
+        self._detect_btn.setEnabled(False)  # enabled once a volume is loaded
+        self._detect_btn.clicked.connect(self._on_detect_clicked)
+        toolbar.addWidget(self._detect_btn)
 
         # --- status bar ----------------------------------------------------
         self._hu_label = QLabel("HU: -")
@@ -91,11 +113,16 @@ class MainWindow(QMainWindow):
         self._thread.start()
 
     def _on_load_finished(self, volume, meta):
+        self._volume = volume
+        self._spacing = meta.get("spacing")
+        self._slice_thresholds = {}  # previous patient's thresholds no longer apply
+        self._thr_label.setText("Metal thr: -")
         self._view.set_volume(volume)
         self._slice_slider.setEnabled(True)
         self._slice_slider.setMaximum(volume.shape[0] - 1)
         self._slice_slider.setValue(volume.shape[0] // 2)
         self._load_btn.setEnabled(True)
+        self._detect_btn.setEnabled(True)
         ct_dir = meta.get("ct_dir", "")
         self.statusBar().showMessage(
             f"Loaded {volume.shape[0]} slices "
@@ -106,6 +133,51 @@ class MainWindow(QMainWindow):
         self._load_btn.setEnabled(True)
         self.statusBar().showMessage(f"Load failed: {message.splitlines()[0]}")
 
+    # ---- metal detection -------------------------------------------------
+    def _on_detect_clicked(self):
+        if self._volume is None:
+            return
+
+        self._detect_btn.setEnabled(False)
+        self.statusBar().showMessage("Detecting metal…")
+
+        self._detect_thread = QThread(self)
+        self._detect_worker = MetalDetectionWorker(self._volume, self._spacing)
+        self._detect_worker.moveToThread(self._detect_thread)
+        self._detect_thread.started.connect(self._detect_worker.run)
+        self._detect_worker.finished.connect(self._on_detect_finished)
+        self._detect_worker.failed.connect(self._on_detect_failed)
+        # Tear down the thread once the worker reports either outcome.
+        self._detect_worker.finished.connect(self._detect_thread.quit)
+        self._detect_worker.failed.connect(self._detect_thread.quit)
+        self._detect_thread.start()
+
+    def _on_detect_finished(self, result):
+        self._detect_btn.setEnabled(True)
+        voxels = int(result["mask"].sum())
+        # Per-slice thresholds (keyed by slice index); keys may be numpy ints.
+        self._slice_thresholds = {
+            int(z): float(t) for z, t in result.get("threshold_evolution", {}).items()
+        }
+        avg = result.get("threshold")
+        avg_txt = f" (avg ~{avg:.0f} HU over {len(self._slice_thresholds)} slices)" if avg else ""
+        self._view.set_mask(result["mask"])  # tint detected metal red
+        self.statusBar().showMessage(f"Metal detected: {voxels:,} voxels{avg_txt}")
+        # Refresh the per-slice readout for whatever slice is showing now.
+        self._update_threshold_label(self._slice_slider.value())
+
+    def _update_threshold_label(self, index: int) -> None:
+        """Show the metal threshold for slice ``index`` (or '-' if none)."""
+        thr = self._slice_thresholds.get(index)
+        if thr is None:
+            self._thr_label.setText("Metal thr: -")
+        else:
+            self._thr_label.setText(f"Metal thr: >{thr:.0f} HU")
+
+    def _on_detect_failed(self, message):
+        self._detect_btn.setEnabled(True)
+        self.statusBar().showMessage(f"Detection: {message.splitlines()[0]}")
+
     # ---- view callbacks --------------------------------------------------
     def _on_slice_changed(self, index, total):
         self._slice_label.setText(f"Slice {index + 1}/{total}")
@@ -113,6 +185,7 @@ class MainWindow(QMainWindow):
         self._slice_slider.blockSignals(True)
         self._slice_slider.setValue(index)
         self._slice_slider.blockSignals(False)
+        self._update_threshold_label(index)
 
     def _on_window_changed(self, center, width):
         self._wl_label.setText(f"W/L: {width:.0f}/{center:.0f}")
