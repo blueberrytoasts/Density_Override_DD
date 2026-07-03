@@ -27,12 +27,15 @@ class MetalDetectionWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, volume: np.ndarray, spacing):
+    def __init__(self, volume: np.ndarray, spacing, fw_percentage: float = 75.0):
         super().__init__()
         self._volume = volume
         # Some DICOM series report a negative z-spacing depending on slice
         # ordering; the detector expects positive magnitudes.
         self._spacing = np.abs(spacing)
+        # Full-Width % of each star line's peak used as that line's threshold.
+        # Lower => lower per-slice cutoff => larger mask.
+        self._fw_percentage = fw_percentage
 
     def run(self) -> None:
         try:
@@ -40,6 +43,7 @@ class MetalDetectionWorker(QObject):
             result = detector.detect(
                 self._volume,
                 self._spacing,
+                fw_percentage=self._fw_percentage,
                 use_star_profiles=True,
             )
             if result.get("mask") is None or not np.any(result["mask"]):

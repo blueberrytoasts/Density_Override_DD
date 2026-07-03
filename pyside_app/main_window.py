@@ -11,13 +11,14 @@ responsive; the window owns the thread/worker references for their lifetime.
 """
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton, QSlider,
-    QVBoxLayout, QWidget,
+    QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
+    QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from pyside_app.slice_view import SliceView
 from pyside_app.dicom_loader import DicomLoadWorker
 from pyside_app.metal_worker import MetalDetectionWorker
+from pyside_app.segment_worker import SegmentationWorker, LegacySegmentationWorker
 
 
 class MainWindow(QMainWindow):
@@ -34,12 +35,18 @@ class MainWindow(QMainWindow):
         self._detect_thread: QThread | None = None
         self._detect_worker: MetalDetectionWorker | None = None
 
+        self._segment_thread: QThread | None = None
+        self._segment_worker: SegmentationWorker | None = None
+
         # Held so detection (a separate user action) can reuse them after load.
         self._volume = None
         self._spacing = None
 
         # {slice_index: threshold_HU} from the last detection; empty until then.
         self._slice_thresholds: dict[int, float] = {}
+
+        # Metal mask retained so segmentation can use it after detection.
+        self._metal_mask = None
 
         # --- central viewer ------------------------------------------------
         self._view = SliceView()
@@ -81,6 +88,33 @@ class MainWindow(QMainWindow):
         self._detect_btn.clicked.connect(self._on_detect_clicked)
         toolbar.addWidget(self._detect_btn)
 
+        self._segment_btn = QPushButton("Segment Artifacts")
+        self._segment_btn.setEnabled(False)  # enabled once metal is detected
+        self._segment_btn.clicked.connect(self._on_segment_clicked)
+        toolbar.addWidget(self._segment_btn)
+
+        self._seg_method_combo = QComboBox()
+        self._seg_method_combo.addItem("Legacy (HU thresholds)", userData="legacy")
+        self._seg_method_combo.addItem("Star Profile", userData="star")
+        self._seg_method_combo.setToolTip(
+            "Legacy: pure boolean HU ranges — fast, no discriminator.\n"
+            "Star Profile: radial profile analysis to separate bone from artifact streaks."
+        )
+        toolbar.addWidget(self._seg_method_combo)
+
+        # FW% control: each star line's threshold is peak x (FW%/100). Lower
+        # widens the mask, higher tightens it. Re-run detection to apply.
+        toolbar.addWidget(QLabel(" FW%:"))
+        self._fw_spin = QSpinBox()
+        self._fw_spin.setRange(50, 95)
+        self._fw_spin.setValue(75)
+        self._fw_spin.setSuffix("%")
+        self._fw_spin.setToolTip(
+            "Full-Width %: per-line threshold = peak HU x (FW%/100).\n"
+            "Lower = larger mask, higher = tighter. Re-run Detect Metal to apply."
+        )
+        toolbar.addWidget(self._fw_spin)
+
         # --- status bar ----------------------------------------------------
         self._hu_label = QLabel("HU: -")
         self.statusBar().addPermanentWidget(self._hu_label)
@@ -115,8 +149,10 @@ class MainWindow(QMainWindow):
     def _on_load_finished(self, volume, meta):
         self._volume = volume
         self._spacing = meta.get("spacing")
+        self._metal_mask = None
         self._slice_thresholds = {}  # previous patient's thresholds no longer apply
         self._thr_label.setText("Metal thr: -")
+        self._segment_btn.setEnabled(False)
         self._view.set_volume(volume)
         self._slice_slider.setEnabled(True)
         self._slice_slider.setMaximum(volume.shape[0] - 1)
@@ -142,7 +178,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Detecting metal…")
 
         self._detect_thread = QThread(self)
-        self._detect_worker = MetalDetectionWorker(self._volume, self._spacing)
+        self._detect_worker = MetalDetectionWorker(
+            self._volume, self._spacing, fw_percentage=float(self._fw_spin.value())
+        )
         self._detect_worker.moveToThread(self._detect_thread)
         self._detect_thread.started.connect(self._detect_worker.run)
         self._detect_worker.finished.connect(self._on_detect_finished)
@@ -154,14 +192,16 @@ class MainWindow(QMainWindow):
 
     def _on_detect_finished(self, result):
         self._detect_btn.setEnabled(True)
-        voxels = int(result["mask"].sum())
+        self._metal_mask = result["mask"]
+        voxels = int(self._metal_mask.sum())
         # Per-slice thresholds (keyed by slice index); keys may be numpy ints.
         self._slice_thresholds = {
             int(z): float(t) for z, t in result.get("threshold_evolution", {}).items()
         }
         avg = result.get("threshold")
         avg_txt = f" (avg ~{avg:.0f} HU over {len(self._slice_thresholds)} slices)" if avg else ""
-        self._view.set_mask(result["mask"])  # tint detected metal red
+        self._view.set_overlays([(self._metal_mask, (255, 0, 0), 0.7)])
+        self._segment_btn.setEnabled(True)
         self.statusBar().showMessage(f"Metal detected: {voxels:,} voxels{avg_txt}")
         # Refresh the per-slice readout for whatever slice is showing now.
         self._update_threshold_label(self._slice_slider.value())
@@ -177,6 +217,53 @@ class MainWindow(QMainWindow):
     def _on_detect_failed(self, message):
         self._detect_btn.setEnabled(True)
         self.statusBar().showMessage(f"Detection: {message.splitlines()[0]}")
+
+    # ---- artifact segmentation -------------------------------------------
+    def _on_segment_clicked(self):
+        if self._volume is None or self._metal_mask is None:
+            return
+
+        method = self._seg_method_combo.currentData()
+        self._segment_btn.setEnabled(False)
+
+        self._segment_thread = QThread(self)
+        if method == "legacy":
+            self.statusBar().showMessage("Segmenting artifacts (legacy HU thresholds)…")
+            self._segment_worker = LegacySegmentationWorker(
+                self._volume, self._metal_mask
+            )
+        else:
+            self.statusBar().showMessage("Segmenting artifacts (star profile)…")
+            self._segment_worker = SegmentationWorker(
+                self._volume, self._spacing, self._metal_mask
+            )
+        self._segment_worker.moveToThread(self._segment_thread)
+        self._segment_thread.started.connect(self._segment_worker.run)
+        self._segment_worker.finished.connect(self._on_segment_finished)
+        self._segment_worker.failed.connect(self._on_segment_failed)
+        self._segment_worker.finished.connect(self._segment_thread.quit)
+        self._segment_worker.failed.connect(self._segment_thread.quit)
+        self._segment_thread.start()
+
+    def _on_segment_finished(self, result):
+        self._segment_btn.setEnabled(True)
+        dark = result["dark_artifacts"]
+        bright = result["bright_artifacts"]
+        bone = result["bone"]
+        self._view.set_overlays([
+            (self._metal_mask,  (255,   0,   0), 0.7),  # red
+            (dark,              (255,   0, 255), 0.6),  # magenta
+            (bright,            (255, 255,   0), 0.6),  # yellow
+            (bone,              (  0,  51, 204), 0.5),  # blue
+        ])
+        self.statusBar().showMessage(
+            f"Segmentation done — dark: {int(dark.sum()):,}  "
+            f"bright artifact: {int(bright.sum()):,}  bone: {int(bone.sum()):,}"
+        )
+
+    def _on_segment_failed(self, message):
+        self._segment_btn.setEnabled(True)
+        self.statusBar().showMessage(f"Segmentation: {message.splitlines()[0]}")
 
     # ---- view callbacks --------------------------------------------------
     def _on_slice_changed(self, index, total):

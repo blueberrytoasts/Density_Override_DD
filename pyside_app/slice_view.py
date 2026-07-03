@@ -17,7 +17,7 @@ from PySide6.QtGui import QPixmap, QPainter
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsPixmapItem
 
 from pyside_app.hu_render import (
-    hu_to_qimage, hu_to_qimage_with_overlay, auto_window_level,
+    hu_to_qimage, hu_to_qimage_with_overlays, auto_window_level,
 )
 
 
@@ -39,7 +39,8 @@ class SliceView(QGraphicsView):
         self._scene.addItem(self._pixmap_item)
 
         self._volume: np.ndarray | None = None
-        self._mask: np.ndarray | None = None  # 3D overlay mask, same shape as volume
+        # list of (mask_3d, rgb_color, alpha) — empty = plain grayscale
+        self._overlays: list[tuple[np.ndarray, tuple[int, int, int], float]] = []
         self._index = 0
         self._center = 40.0
         self._width = 400.0
@@ -59,25 +60,23 @@ class SliceView(QGraphicsView):
     def set_volume(self, volume: np.ndarray) -> None:
         """Load a new volume (z, y, x), reset to the middle slice + auto W/L."""
         self._volume = volume
-        self._mask = None  # a new volume invalidates any previous overlay
+        self._overlays = []  # a new volume invalidates any previous overlays
         self._index = volume.shape[0] // 2
         self._center, self._width = auto_window_level(volume)
         self._render(fit=True)
         self.slice_changed.emit(self._index, volume.shape[0])
         self.window_changed.emit(self._center, self._width)
 
-    def set_mask(self, mask: np.ndarray | None) -> None:
-        """Set (or clear, with None) the 3D overlay mask and redraw.
+    def set_overlays(
+        self,
+        overlays: list[tuple[np.ndarray, tuple[int, int, int], float]] | None,
+    ) -> None:
+        """Set (or clear) the list of colored 3D overlays and redraw.
 
-        ``mask`` must share the volume's (z, y, x) shape. Passing None removes
-        the overlay and returns to plain grayscale.
+        Each entry is (mask_3d, rgb_color, alpha). Pass None or [] to return
+        to plain grayscale. All masks must share the volume's (z, y, x) shape.
         """
-        if mask is not None and self._volume is not None:
-            if mask.shape != self._volume.shape:
-                raise ValueError(
-                    f"mask shape {mask.shape} != volume shape {self._volume.shape}"
-                )
-        self._mask = mask
+        self._overlays = overlays or []
         self._render()
 
     def set_slice(self, index: int) -> None:
@@ -110,11 +109,12 @@ class SliceView(QGraphicsView):
         if self._volume is None:
             return
         slice_hu = self._volume[self._index]
-        if self._mask is None:
+        if not self._overlays:
             image = hu_to_qimage(slice_hu, self._center, self._width)
         else:
-            image = hu_to_qimage_with_overlay(
-                slice_hu, self._center, self._width, self._mask[self._index]
+            per_slice = [(m[self._index], c, a) for m, c, a in self._overlays]
+            image = hu_to_qimage_with_overlays(
+                slice_hu, self._center, self._width, per_slice
             )
         self._pixmap_item.setPixmap(QPixmap.fromImage(image))
         self._scene.setSceneRect(self._pixmap_item.boundingRect())

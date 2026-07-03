@@ -20,7 +20,14 @@
       "Bash(git worktree:*)",
       "WebFetch(domain:stackoverflow.com)",
       "Bash(git log:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(echo \"=== EXIT: $? ===\")",
+      "Bash(git rev-list *)",
+      "Bash(rm changelogs/GPU_SETUP_TODO.md)",
+      "Bash(rm docs/plans/2026-02-15-fast-slice-viewer.md)",
+      "Bash(rmdir docs/plans/)",
+      "Bash(git restore *)",
+      "WebFetch(domain:pmc.ncbi.nlm.nih.gov)"
     ],
     "deny": [],
     "ask": []

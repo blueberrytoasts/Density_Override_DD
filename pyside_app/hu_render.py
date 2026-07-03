@@ -80,6 +80,45 @@ def hu_to_qimage_with_overlay(
     return image.copy()
 
 
+def hu_to_qimage_with_overlays(
+    slice_hu: np.ndarray,
+    center: float,
+    width: float,
+    overlays: list[tuple[np.ndarray, tuple[int, int, int], float]],
+) -> QImage:
+    """Like ``hu_to_qimage_with_overlay`` but accepts multiple colored masks.
+
+    Args:
+        slice_hu: 2D HU array.
+        center, width: window/level.
+        overlays: list of (mask_2d, rgb_color, alpha) tuples applied in order.
+            Later entries paint over earlier ones (put bone last).
+
+    Returns:
+        A ``QImage`` (Format_RGB888) that owns its pixel buffer.
+    """
+    width = max(float(width), 1.0)
+    low = center - width / 2.0
+    high = center + width / 2.0
+
+    normalized = (slice_hu.astype(np.float32) - low) / (high - low)
+    np.clip(normalized, 0.0, 1.0, out=normalized)
+    gray = normalized * 255.0
+    rgb = np.repeat(gray[:, :, None], 3, axis=2)
+
+    for mask, color, alpha in overlays:
+        m = mask.astype(bool)
+        if not m.any():
+            continue
+        tint = np.asarray(color, dtype=np.float32)
+        rgb[m] = (1.0 - alpha) * rgb[m] + alpha * tint
+
+    buf = np.ascontiguousarray(rgb.astype(np.uint8))
+    h, w, _ = buf.shape
+    image = QImage(buf.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+    return image.copy()
+
+
 def auto_window_level(volume: np.ndarray) -> tuple[float, float]:
     """Pick a reasonable initial window/level for a CT volume.
 
