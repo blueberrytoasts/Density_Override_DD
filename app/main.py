@@ -828,6 +828,9 @@ if st.session_state.ct_volume is not None:
                             start_time = time.time()
                             metal_mask = st.session_state.masks['metal']
                             roi_bounds = st.session_state.metal_detection_result['roi_bounds']
+                            # Per-component ROI mask (one box per implant) — preferred
+                            # over the single roi_bounds box for bilateral cases
+                            detection_roi_mask = st.session_state.metal_detection_result.get('roi_mask')
                             
                             # Get threshold values from session state based on segmentation method
                             if segmentation_method == "Russian Doll with Star Profile Discrimination" or \
@@ -873,6 +876,7 @@ if st.session_state.ct_volume is not None:
                                         metal_mask,
                                         spacing,
                                         roi_bounds,
+                                        roi_mask=detection_roi_mask,
                                         dark_threshold_low=dark_low,
                                         dark_threshold_high=dark_high,
                                         bone_threshold_low=bone_low,
@@ -907,8 +911,12 @@ if st.session_state.ct_volume is not None:
                                     from body_mask import create_body_mask
                                     body_mask = create_body_mask(st.session_state.ct_volume, air_threshold=-400)
 
-                                    # Create ROI mask if bounds provided
-                                    if roi_bounds is not None:
+                                    # Constrain to per-component ROI mask (one box per
+                                    # implant) when available; fall back to the single
+                                    # roi_bounds box otherwise
+                                    if detection_roi_mask is not None:
+                                        constraint_mask = body_mask & detection_roi_mask
+                                    elif roi_bounds is not None:
                                         z_min = int(roi_bounds['z_min'])
                                         z_max = int(roi_bounds['z_max'])
                                         y_min = int(roi_bounds['y_min'])

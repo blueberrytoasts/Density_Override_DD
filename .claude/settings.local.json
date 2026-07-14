@@ -27,7 +27,12 @@
       "Bash(rm docs/plans/2026-02-15-fast-slice-viewer.md)",
       "Bash(rmdir docs/plans/)",
       "Bash(git restore *)",
-      "WebFetch(domain:pmc.ncbi.nlm.nih.gov)"
+      "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\(r'app\\\\core\\\\metal_detection.py', encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "PowerShell(python \"C:\\\\Users\\\\david\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-david-OneDrive-Documents-GitHub-Density-Override-DD\\\\b793a1e4-3c1b-40d2-b78f-a5b93395711e\\\\scratchpad\\\\test_bilateral_fix.py\")",
+      "PowerShell(python -c \"import ast; [ast.parse\\(open\\(f, encoding='utf-8'\\).read\\(\\)\\) for f in [r'app\\\\main.py', r'app\\\\contour_operations.py', r'pyside_app\\\\segment_worker.py', r'pyside_app\\\\main_window.py']]; print\\('all syntax OK'\\)\")",
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\('pyside_app/main_window.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\"; python -c \"import pyside_app.main_window; print\\('import OK'\\)\")",
+      "PowerShell(python -c \"import pyside_app.main_window, pyside_app.slice_view, pyside_app.metal_worker; print\\('imports OK'\\)\")"
     ],
     "deny": [],
     "ask": []

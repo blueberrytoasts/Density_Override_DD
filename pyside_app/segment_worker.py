@@ -40,15 +40,21 @@ class LegacySegmentationWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, volume: np.ndarray, metal_mask: np.ndarray):
+    def __init__(self, volume: np.ndarray, metal_mask: np.ndarray,
+                 roi_mask: np.ndarray | None = None):
         super().__init__()
         self._volume = volume
         self._metal_mask = metal_mask
+        self._roi_mask = roi_mask
 
     def run(self) -> None:
         try:
             body_mask = create_body_mask(self._volume, air_threshold=-400)
             constraint = body_mask & ~self._metal_mask
+            if self._roi_mask is not None:
+                # Per-component ROI boxes from metal detection: keeps analysis
+                # local to each implant (bilateral-safe)
+                constraint &= self._roi_mask
 
             dark_mask = (
                 (self._volume >= _DARK_LOW)
@@ -97,17 +103,23 @@ class SegmentationWorker(QObject):
         spacing,
         metal_mask: np.ndarray,
         num_angles: int = 32,
+        roi_mask: np.ndarray | None = None,
     ):
         super().__init__()
         self._volume = volume
         self._spacing = np.abs(spacing)
         self._metal_mask = metal_mask
         self._num_angles = num_angles
+        self._roi_mask = roi_mask
 
     def run(self) -> None:
         try:
             body_mask = create_body_mask(self._volume, air_threshold=-400)
             constraint = body_mask & ~self._metal_mask
+            if self._roi_mask is not None:
+                # Per-component ROI boxes from metal detection: keeps analysis
+                # local to each implant (bilateral-safe)
+                constraint &= self._roi_mask
 
             dark_mask = (
                 (self._volume >= _DARK_LOW)

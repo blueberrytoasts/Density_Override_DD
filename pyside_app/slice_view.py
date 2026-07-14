@@ -104,18 +104,26 @@ class SliceView(QGraphicsView):
             return int(self._volume[self._index, y, x])
         return None
 
-    # ---- rendering ------------------------------------------------------
-    def _render(self, fit: bool = False) -> None:
+    def current_image(self):
+        """The currently shown slice (with active overlays) as a QImage.
+
+        Returns None when no volume is loaded. Used for exporting figures.
+        """
         if self._volume is None:
-            return
+            return None
         slice_hu = self._volume[self._index]
         if not self._overlays:
-            image = hu_to_qimage(slice_hu, self._center, self._width)
-        else:
-            per_slice = [(m[self._index], c, a) for m, c, a in self._overlays]
-            image = hu_to_qimage_with_overlays(
-                slice_hu, self._center, self._width, per_slice
-            )
+            return hu_to_qimage(slice_hu, self._center, self._width)
+        per_slice = [(m[self._index], c, a) for m, c, a in self._overlays]
+        return hu_to_qimage_with_overlays(
+            slice_hu, self._center, self._width, per_slice
+        )
+
+    # ---- rendering ------------------------------------------------------
+    def _render(self, fit: bool = False) -> None:
+        image = self.current_image()
+        if image is None:
+            return
         self._pixmap_item.setPixmap(QPixmap.fromImage(image))
         self._scene.setSceneRect(self._pixmap_item.boundingRect())
         if fit:

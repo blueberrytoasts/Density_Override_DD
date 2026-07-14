@@ -16,15 +16,18 @@ The old note here claimed the `bone_low`/`bone_high` sliders had no effect. That
 
 **Remaining design question (not a bug):** HU is a weighted vote, not a hard gate. A pixel inside the HU range can still be classified as artifact if the shape features outvote it. If a strict cutoff is desired, switch to **Option A**: `bone = (bone_score > 0) AND (bone_low <= HU <= bone_high)`.
 
-### Outstanding Bug: Per-Component Metal ROIs Overwritten (Priority: HIGH)
+### Per-Component Metal ROIs — FIXED (2026-07-09, was Priority: HIGH)
 
-**Problem:** `metal_detection.py` correctly finds separate connected metal components per slice (good for bilateral implants), then throws that work away.
+The old bug: `metal_detection.py` found separate connected metal components per slice, then overwrote `individual_regions` with a single averaged "conservative" box — for bilateral implants (HIP3) the averaged centroid landed *between* the hips and the box spanned both.
 
-**Where:** `app/core/metal_detection.py` lines ~311-314 and again ~371-373. After building a single "conservative" bounding box, it computes `center = np.mean(ALL metal voxels)`, wipes `individual_regions`, and refills every slice with that one box.
+**Fix (on `feature/pyside-app`):**
+- `app/core/metal_detection.py`: per-component region building extracted into `_build_individual_regions()`; both overwrite blocks removed; regions rebuilt from the hole-filled mask. Works for any number of implants. `roi_bounds` remains as overall display/extent only.
+- New result key `roi_mask`: 3D bool union of per-component boxes (+5 voxel conservative margin) via `_regions_to_roi_mask()`. Use this to constrain segmentation, not `roi_bounds`.
+- `app/contour_operations.py`: `create_russian_doll_segmentation(..., roi_mask=None)` — takes precedence over `roi_bounds` box for constraining.
+- `app/main.py`: both segmentation paths pass the detection `roi_mask`.
+- `pyside_app/segment_worker.py` + `main_window.py`: both workers accept `roi_mask`; wired from the detection result (previously PySide segmentation had no ROI constraint at all).
 
-**Impact:** For bilateral implants (e.g. HIP3) the averaged centroid lands *between* the two hips and the single box spans both — reintroducing the bilateral-capture problem the per-component logic was meant to prevent. Unilateral cases (HIP4) look fine because mean ≈ true center, which is why it hides.
-
-**Fix direction:** Keep `individual_regions[z]` as the per-component list end-to-end; let `roi_bounds` stay only for overall display/extent.
+Verified with a synthetic bilateral phantom (2 regions per slice, centers on each implant, gap between implants excluded from ROI mask) and a unilateral phantom (1 region, unchanged behavior).
 
 ### What's Working
 - Fast slice viewer: PIL-based rendering (~10ms) via `fast_render_slice()` in `app/visualization.py`

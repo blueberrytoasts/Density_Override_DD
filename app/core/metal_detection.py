@@ -215,68 +215,15 @@ class MetalDetector:
             margin_mm = margin_cm * 10  # Convert cm to mm
             margin_voxels = int(margin_mm / spacing_mm)
             
-            # Create adaptive ROI boxes per slice and per component
-            # Limit processing to reasonable number of slices for performance
-            from scipy.ndimage import label as scipy_label
-            
-            max_slices_to_process = min(len(valid_z_slices), 100)  # Increased limit for better coverage
-            processed_slices = valid_z_slices[:max_slices_to_process] if len(valid_z_slices) > max_slices_to_process else valid_z_slices
-            
-            
-            for z in processed_slices:
-                if z not in individual_regions:
-                    individual_regions[z] = []
-
-                slice_mask = roi_metal_mask[z]  # Use ROI-restricted mask (median and above)
-                if np.any(slice_mask):
-                    # Find connected components on this slice to handle bilateral implants
-                    # Use 4-connectivity to better separate bilateral implants
-                    slice_components, n_components = scipy_label(slice_mask, structure=np.array([[0,1,0],[1,1,1],[0,1,0]]))
-                    
-                    # Sort components by size and process only the largest ones
-                    component_sizes = []
-                    for comp_id in range(1, n_components + 1):
-                        size = np.sum(slice_components == comp_id)
-                        component_sizes.append((size, comp_id))
-                    
-                    # Sort by size (largest first) and limit to top components
-                    component_sizes.sort(reverse=True)
-                    max_components = min(len(component_sizes), 3)  # Process up to 3 largest components
-                    
-                    
-                    for size, comp_id in component_sizes[:max_components]:
-                        # Skip very small components (likely noise)
-                        if size < 10:  # Minimum size threshold
-                            continue
-                            
-                        component_mask = slice_components == comp_id
-                        
-                        # Fast bounding box calculation
-                        y_indices, x_indices = np.where(component_mask)
-                        
-                        if len(y_indices) > 0:
-                            # Create ROI box sized specifically for this component on this slice
-                            y_min_comp = max(0, np.min(y_indices) - margin_voxels)
-                            y_max_comp = min(ct_volume.shape[1], np.max(y_indices) + margin_voxels + 1)
-                            x_min_comp = max(0, np.min(x_indices) - margin_voxels)
-                            x_max_comp = min(ct_volume.shape[2], np.max(x_indices) + margin_voxels + 1)
-                            
-                            center_y = int(np.mean(y_indices))
-                            center_x = int(np.mean(x_indices))
-                            
-                            individual_regions[z].append({
-                                'component_id': comp_id,
-                                'y_min': y_min_comp,
-                                'y_max': y_max_comp,
-                                'x_min': x_min_comp,
-                                'x_max': x_max_comp,
-                                'center_y': center_y,
-                                'center_x': center_x
-                            })
-                
-                # Merge overlapping ROI boxes on this slice immediately
-                if z in individual_regions and len(individual_regions[z]) > 1:
-                    individual_regions[z] = self._merge_overlapping_boxes(individual_regions[z])
+            # Create adaptive ROI boxes per slice and per component.
+            # Built from the FULL refined mask — not the median-restricted one —
+            # so boxes cover the whole implant including dimmer metal (thin
+            # edges, screw tips, stem tip); the median mask above is kept only
+            # for the overall roi_bounds extent.
+            individual_regions = self._build_individual_regions(
+                ct_volume.shape, refined_mask, list(np.unique(z_coords)),
+                margin_voxels
+            )
         
         # Create Conservative ROI - calculate bounds from ROI-restricted metal voxels (median and above)
         if len(z_coords_roi) > 0:
@@ -294,24 +241,9 @@ class MetalDetector:
                 'x_min': max(0, int(np.min(x_coords_roi)) - conservative_margin_voxels),
                 'x_max': min(ct_volume.shape[2], int(np.max(x_coords_roi)) + conservative_margin_voxels + 1)
             }
-
-
-            # Override individual regions to use the same conservative ROI for all slices
-            # This ensures consistent ROI display and artifact containment
-            conservative_region = {
-                'component_id': 0,
-                'y_min': roi_bounds['y_min'],
-                'y_max': roi_bounds['y_max'],
-                'x_min': roi_bounds['x_min'],
-                'x_max': roi_bounds['x_max'],
-                'center_y': int(np.mean(y_coords_roi)),
-                'center_x': int(np.mean(x_coords_roi))
-            }
-
-            # Apply this conservative ROI to all valid slices
-            individual_regions = {}
-            for z in valid_z_slices:
-                individual_regions[z] = [conservative_region.copy()]
+            # NOTE: individual_regions intentionally keeps one box per metal
+            # component (bilateral-safe). roi_bounds above is the overall
+            # extent only — do not collapse the per-component boxes into it.
         else:
             # No metal found, return empty result
             return self._empty_result()
@@ -357,20 +289,13 @@ class MetalDetector:
                     'x_max': min(ct_volume.shape[2], int(np.max(x_coords_roi_filled)) + conservative_margin_voxels + 1)
                 }
 
-                # Update individual regions to use conservative ROI for all valid slices
-                conservative_region = {
-                    'component_id': 0,
-                    'y_min': roi_bounds['y_min'],
-                    'y_max': roi_bounds['y_max'],
-                    'x_min': roi_bounds['x_min'],
-                    'x_max': roi_bounds['x_max'],
-                    'center_y': int(np.mean(y_coords_roi_filled)),
-                    'center_x': int(np.mean(x_coords_roi_filled))
-                }
-
-                individual_regions = {}
-                for z in valid_z_slices_filled:
-                    individual_regions[z] = [conservative_region.copy()]
+                # Rebuild per-component regions from the FULL filled mask so
+                # each implant keeps its own ROI box (bilateral-safe) and the
+                # boxes cover all detected metal, not just the brighter half.
+                individual_regions = self._build_individual_regions(
+                    ct_volume.shape, filled_metal_mask,
+                    list(np.unique(z_coords_filled)), margin_voxels
+                )
         
         # Calculate average threshold
         avg_threshold = np.mean(list(slice_thresholds.values())) if slice_thresholds else initial_threshold
@@ -383,6 +308,7 @@ class MetalDetector:
             'threshold': avg_threshold,
             'threshold_evolution': slice_thresholds,
             'individual_regions': individual_regions,
+            'roi_mask': self._regions_to_roi_mask(ct_volume.shape, individual_regions),
             'center_coords': (int(np.mean(z_coords_roi_filled)), int(np.mean(y_coords_roi_filled)), int(np.mean(x_coords_roi_filled))) if 'z_coords_roi_filled' in locals() and len(z_coords_roi_filled) > 0 else (int(np.mean(z_coords_roi)), int(np.mean(y_coords_roi)), int(np.mean(x_coords_roi))),
             'method': 'adaptive_3d',
             'valid_roi_slices': valid_z_slices_filled if 'valid_z_slices_filled' in locals() and valid_z_slices_filled else (valid_z_slices if 'valid_z_slices' in locals() and valid_z_slices else list(range(roi_bounds['z_min'], roi_bounds['z_max']))),
@@ -399,81 +325,133 @@ class MetalDetector:
             }
         }
     
+    def _build_individual_regions(self, volume_shape: Tuple[int, ...],
+                                  metal_mask: np.ndarray,
+                                  valid_z_slices: List[int],
+                                  margin_voxels: int) -> Dict[int, List[Dict]]:
+        """
+        Build per-component ROI boxes for each slice.
+
+        Each connected metal component on a slice (e.g. left and right implants
+        in a bilateral case) gets its own bounding box and center so downstream
+        analysis stays local to each implant. Works for any number of implants.
+
+        ``metal_mask`` should be the full detected metal mask so boxes cover
+        the entire implant; small (<10 px) components are still skipped as
+        noise.
+        """
+        from scipy.ndimage import label as scipy_label
+
+        individual_regions = {}
+
+        for z in valid_z_slices:
+            individual_regions[z] = []
+
+            slice_mask = metal_mask[z]
+            if not np.any(slice_mask):
+                continue
+
+            # Use 4-connectivity to better separate bilateral implants
+            slice_components, n_components = scipy_label(
+                slice_mask, structure=np.array([[0,1,0],[1,1,1],[0,1,0]])
+            )
+
+            # Sort components by size (largest first). Every component gets a
+            # box so the ROI encompasses ALL detected metal; only single-pixel
+            # specks are skipped as noise.
+            component_sizes = sorted(
+                ((np.sum(slice_components == comp_id), comp_id)
+                 for comp_id in range(1, n_components + 1)),
+                reverse=True
+            )
+
+            for size, comp_id in component_sizes:
+                if size < 4:
+                    continue
+
+                y_indices, x_indices = np.where(slice_components == comp_id)
+
+                individual_regions[z].append({
+                    'component_id': comp_id,
+                    'y_min': int(max(0, np.min(y_indices) - margin_voxels)),
+                    'y_max': int(min(volume_shape[1], np.max(y_indices) + margin_voxels + 1)),
+                    'x_min': int(max(0, np.min(x_indices) - margin_voxels)),
+                    'x_max': int(min(volume_shape[2], np.max(x_indices) + margin_voxels + 1)),
+                    'center_y': int(np.mean(y_indices)),
+                    'center_x': int(np.mean(x_indices))
+                })
+
+            # Merge overlapping ROI boxes on this slice immediately
+            if len(individual_regions[z]) > 1:
+                individual_regions[z] = self._merge_overlapping_boxes(individual_regions[z])
+
+        return individual_regions
+
+    def _regions_to_roi_mask(self, volume_shape: Tuple[int, ...],
+                             individual_regions: Dict[int, List[Dict]],
+                             extra_margin_voxels: int = 5) -> np.ndarray:
+        """
+        Union of the per-component boxes as a 3D bool mask.
+
+        Use this to constrain artifact segmentation to each implant's
+        neighborhood instead of one box spanning all implants (which captures
+        unrelated anatomy between bilateral implants). extra_margin_voxels
+        matches the conservative ROI margin so artifacts just outside the
+        per-component boxes are still captured.
+        """
+        roi_mask = np.zeros(volume_shape, dtype=bool)
+        for z, regions in individual_regions.items():
+            for region in regions:
+                y_min = max(0, region['y_min'] - extra_margin_voxels)
+                y_max = min(volume_shape[1], region['y_max'] + extra_margin_voxels)
+                x_min = max(0, region['x_min'] - extra_margin_voxels)
+                x_max = min(volume_shape[2], region['x_max'] + extra_margin_voxels)
+                roi_mask[z, y_min:y_max, x_min:x_max] = True
+        return roi_mask
+
     def _merge_overlapping_boxes(self, boxes: List[Dict]) -> List[Dict]:
-        """Fast merge of overlapping ROI boxes on the same slice."""
-        if len(boxes) <= 1:
-            return boxes
-        
-        # Quick optimization: if only 2 boxes, just check once
-        if len(boxes) == 2:
-            box1, box2 = boxes[0], boxes[1]
-            
-            # Calculate overlap area
-            x_overlap = max(0, min(box1['x_max'], box2['x_max']) - max(box1['x_min'], box2['x_min']))
-            y_overlap = max(0, min(box1['y_max'], box2['y_max']) - max(box1['y_min'], box2['y_min']))
+        """Merge overlapping ROI boxes on the same slice.
+
+        Boxes overlapping by >20% of the smaller box's area are replaced by
+        their union, repeatedly until no pair merges (so chained overlaps
+        A-B, B-C collapse into one box). Disjoint boxes stay separate, which
+        keeps bilateral implants in their own boxes.
+        """
+        def _union_if_overlapping(a: Dict, b: Dict) -> Optional[Dict]:
+            x_overlap = max(0, min(a['x_max'], b['x_max']) - max(a['x_min'], b['x_min']))
+            y_overlap = max(0, min(a['y_max'], b['y_max']) - max(a['y_min'], b['y_min']))
             overlap_area = x_overlap * y_overlap
-            
-            # Calculate individual box areas
-            box1_area = (box1['x_max'] - box1['x_min']) * (box1['y_max'] - box1['y_min'])
-            box2_area = (box2['x_max'] - box2['x_min']) * (box2['y_max'] - box2['y_min'])
-            min_area = min(box1_area, box2_area)
-            
+            if overlap_area == 0:
+                return None
+            area_a = (a['x_max'] - a['x_min']) * (a['y_max'] - a['y_min'])
+            area_b = (b['x_max'] - b['x_min']) * (b['y_max'] - b['y_min'])
             # Only merge if overlap is significant (>20% of smaller box)
-            if overlap_area > 0 and overlap_area > 0.2 * min_area:
-                # Significant overlap, merge them
-                return [{
-                    'component_id': min(box1['component_id'], box2['component_id']),
-                    'y_min': min(box1['y_min'], box2['y_min']),
-                    'y_max': max(box1['y_max'], box2['y_max']),
-                    'x_min': min(box1['x_min'], box2['x_min']),
-                    'x_max': max(box1['x_max'], box2['x_max']),
-                    'center_y': (box1['center_y'] + box2['center_y']) // 2,
-                    'center_x': (box1['center_x'] + box2['center_x']) // 2
-                }]
-            else:
-                return boxes  # No overlap, keep separate
-        
-        # For more than 2 boxes, use simple greedy approach
-        # Most cases will be <= 2 boxes per slice anyway
-        merged = []
-        unprocessed = boxes.copy()
-        
-        while unprocessed:
-            current = unprocessed.pop(0)
-            
-            # Find first significantly overlapping box (if any)
-            merged_any = False
-            for i, other in enumerate(unprocessed):
-                # Calculate overlap area
-                x_overlap = max(0, min(current['x_max'], other['x_max']) - max(current['x_min'], other['x_min']))
-                y_overlap = max(0, min(current['y_max'], other['y_max']) - max(current['y_min'], other['y_min']))
-                overlap_area = x_overlap * y_overlap
-                
-                if overlap_area > 0:
-                    # Calculate box areas
-                    current_area = (current['x_max'] - current['x_min']) * (current['y_max'] - current['y_min'])
-                    other_area = (other['x_max'] - other['x_min']) * (other['y_max'] - other['y_min'])
-                    min_area = min(current_area, other_area)
-                    
-                    # Only merge if overlap is significant (>20% of smaller box)
-                    if overlap_area > 0.2 * min_area:
-                        # Merge and remove the other box
-                        current = {
-                            'component_id': min(current['component_id'], other['component_id']),
-                            'y_min': min(current['y_min'], other['y_min']),
-                            'y_max': max(current['y_max'], other['y_max']),
-                            'x_min': min(current['x_min'], other['x_min']),
-                            'x_max': max(current['x_max'], other['x_max']),
-                            'center_y': (current['center_y'] + other['center_y']) // 2,
-                            'center_x': (current['center_x'] + other['center_x']) // 2
-                        }
-                        unprocessed.pop(i)
-                        merged_any = True
+            if overlap_area <= 0.2 * min(area_a, area_b):
+                return None
+            return {
+                'component_id': min(a['component_id'], b['component_id']),
+                'y_min': min(a['y_min'], b['y_min']),
+                'y_max': max(a['y_max'], b['y_max']),
+                'x_min': min(a['x_min'], b['x_min']),
+                'x_max': max(a['x_max'], b['x_max']),
+                'center_y': (a['center_y'] + b['center_y']) // 2,
+                'center_x': (a['center_x'] + b['center_x']) // 2,
+            }
+
+        merged = list(boxes)
+        changed = True
+        while changed:
+            changed = False
+            for i in range(len(merged)):
+                for j in range(i + 1, len(merged)):
+                    union = _union_if_overlapping(merged[i], merged[j])
+                    if union is not None:
+                        merged[i] = union
+                        merged.pop(j)
+                        changed = True
                         break
-            
-            if not merged_any:
-                merged.append(current)
-        
+                if changed:
+                    break
         return merged
     
     def _calculate_star_threshold(self, slice_data: np.ndarray, center_y: int, center_x: int,
@@ -604,6 +582,8 @@ class MetalDetector:
             'roi_bounds': None,
             'threshold': None,
             'center_coords': None,
+            'individual_regions': {},
+            'roi_mask': None,
             'method': self.method.value,
             'metadata': {}
         }

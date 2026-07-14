@@ -970,6 +970,7 @@ def create_bone_mask(ct_volume, metal_mask, bright_mask, dark_mask, roi_bounds,
 
 
 def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=None,
+                                   roi_mask=None,
                                    dark_threshold_high=-150,
                                    dark_threshold_low=-1024,  # Add parameter for lower bound
                                    bone_threshold_low=500, bone_threshold_high=1500,
@@ -989,6 +990,9 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         metal_mask: Already segmented metal mask
         spacing: Voxel spacing (z, y, x) in mm
         roi_bounds: Optional ROI bounds to constrain analysis
+        roi_mask: Optional 3D bool mask (e.g. per-component boxes from metal
+            detection). Takes precedence over roi_bounds for constraining
+            results — keeps bilateral implants' ROIs separate.
         dark_threshold_high: Upper threshold for dark artifacts
         bone_threshold_low: Lower threshold for bone tissue
         bone_threshold_high: Upper threshold for bone tissue
@@ -1023,8 +1027,10 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
         # Create body mask to exclude air outside patient
         body_mask = create_body_mask(ct_volume, air_threshold=-400)
         
-        # Create ROI mask if bounds provided
-        if roi_bounds is not None:
+        # Create ROI constraint: per-component mask preferred over box bounds
+        if roi_mask is not None:
+            constraint_mask = body_mask & roi_mask
+        elif roi_bounds is not None:
             if isinstance(roi_bounds, dict):
                 z_min = int(roi_bounds['z_min'])
                 z_max = int(roi_bounds['z_max'])
@@ -1035,9 +1041,9 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             else:
                 z_min, z_max, y_min, y_max, x_min, x_max = roi_bounds
                 z_min, z_max, y_min, y_max, x_min, x_max = int(z_min), int(z_max), int(y_min), int(y_max), int(x_min), int(x_max)
-            roi_mask = np.zeros_like(ct_volume, dtype=bool)
-            roi_mask[z_min:z_max, y_min:y_max, x_min:x_max] = True
-            constraint_mask = body_mask & roi_mask
+            box_mask = np.zeros_like(ct_volume, dtype=bool)
+            box_mask[z_min:z_max, y_min:y_max, x_min:x_max] = True
+            constraint_mask = body_mask & box_mask
         else:
             constraint_mask = body_mask
         
@@ -1103,16 +1109,18 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
             roi_bounds=roi_bounds
         )
     
-    # If ROI bounds provided, constrain results
-    if roi_bounds is not None:
-        roi_mask = np.zeros_like(ct_volume, dtype=bool)
-        roi_mask[roi_bounds['z_min']:roi_bounds['z_max'],
-                 roi_bounds['y_min']:roi_bounds['y_max'],
-                 roi_bounds['x_min']:roi_bounds['x_max']] = True
-        
+    # Constrain results to ROI: per-component mask preferred over box bounds
+    final_roi_mask = roi_mask
+    if final_roi_mask is None and roi_bounds is not None:
+        final_roi_mask = np.zeros_like(ct_volume, dtype=bool)
+        final_roi_mask[roi_bounds['z_min']:roi_bounds['z_max'],
+                       roi_bounds['y_min']:roi_bounds['y_max'],
+                       roi_bounds['x_min']:roi_bounds['x_max']] = True
+
+    if final_roi_mask is not None:
         for mask_name in ['dark_artifacts', 'bone', 'bright_artifacts']:
             if mask_name in segmentation_result:
-                segmentation_result[mask_name] = segmentation_result[mask_name] & roi_mask
+                segmentation_result[mask_name] = segmentation_result[mask_name] & final_roi_mask
     
     # Apply refinement to all masks
     print("\nApplying refinement to masks...")
