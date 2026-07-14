@@ -41,6 +41,9 @@ class SliceView(QGraphicsView):
         self._volume: np.ndarray | None = None
         # list of (mask_3d, rgb_color, alpha) — empty = plain grayscale
         self._overlays: list[tuple[np.ndarray, tuple[int, int, int], float]] = []
+        # Optional 3D bool mask; pixels outside it render as air (hides the
+        # CT couch). None = show everything.
+        self._body_mask: np.ndarray | None = None
         self._index = 0
         self._center = 40.0
         self._width = 400.0
@@ -61,6 +64,7 @@ class SliceView(QGraphicsView):
         """Load a new volume (z, y, x), reset to the middle slice + auto W/L."""
         self._volume = volume
         self._overlays = []  # a new volume invalidates any previous overlays
+        self._body_mask = None  # stale mask must not blank the new patient
         self._index = volume.shape[0] // 2
         self._center, self._width = auto_window_level(volume)
         self._render(fit=True)
@@ -88,6 +92,12 @@ class SliceView(QGraphicsView):
             self._render()
             self.slice_changed.emit(self._index, self._volume.shape[0])
 
+    def set_body_mask(self, mask: np.ndarray | None) -> None:
+        """Blank pixels outside ``mask`` (renders them as air, hiding the CT
+        couch). Pass None to show the full slice again."""
+        self._body_mask = mask
+        self._render()
+
     def set_window(self, center: float, width: float) -> None:
         self._center = float(center)
         self._width = max(float(width), 1.0)
@@ -112,6 +122,9 @@ class SliceView(QGraphicsView):
         if self._volume is None:
             return None
         slice_hu = self._volume[self._index]
+        if self._body_mask is not None:
+            # Outside-body pixels (couch, blankets) become air => render black.
+            slice_hu = np.where(self._body_mask[self._index], slice_hu, -1000)
         if not self._overlays:
             return hu_to_qimage(slice_hu, self._center, self._width)
         per_slice = [(m[self._index], c, a) for m, c, a in self._overlays]

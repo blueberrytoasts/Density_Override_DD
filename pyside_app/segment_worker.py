@@ -124,14 +124,12 @@ class SegmentationWorker(QObject):
             dark_mask = (
                 (self._volume >= _DARK_LOW)
                 & (self._volume <= _DARK_HIGH)
-                & ~self._metal_mask
                 & constraint
             )
 
             bright_mask = (
                 (self._volume >= _BRIGHT_LOW)
                 & (self._volume <= _BRIGHT_HIGH)
-                & ~self._metal_mask
                 & ~dark_mask
                 & constraint
             )

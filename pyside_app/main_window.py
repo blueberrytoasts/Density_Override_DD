@@ -22,6 +22,7 @@ from pyside_app.hu_render import auto_window_level
 from pyside_app.dicom_loader import DicomLoadWorker
 from pyside_app.metal_worker import MetalDetectionWorker
 from pyside_app.segment_worker import SegmentationWorker, LegacySegmentationWorker
+from pyside_app.body_mask_worker import BodyMaskWorker
 
 
 class MainWindow(QMainWindow):
@@ -40,6 +41,11 @@ class MainWindow(QMainWindow):
 
         self._segment_thread: QThread | None = None
         self._segment_worker: SegmentationWorker | None = None
+
+        self._bed_thread: QThread | None = None
+        self._bed_worker: BodyMaskWorker | None = None
+        # Cached body mask for the loaded patient (computed on first toggle).
+        self._body_mask = None
 
         # Held so detection (a separate user action) can reuse them after load.
         self._volume = None
@@ -169,6 +175,18 @@ class MainWindow(QMainWindow):
         self._export_btn.clicked.connect(self._on_export_clicked)
         toolbar.addWidget(self._export_btn)
 
+        # Hide the CT couch: renders everything outside the body mask as air.
+        # Applies to the live view AND exports (export saves the rendered view).
+        self._hide_bed_check = QCheckBox("Hide bed")
+        self._hide_bed_check.setEnabled(False)  # needs a loaded volume
+        self._hide_bed_check.setToolTip(
+            "Blank everything outside the patient's body (CT couch, blankets).\n"
+            "First use per patient computes the body mask (a few seconds).\n"
+            "Exported images honor this setting."
+        )
+        self._hide_bed_check.toggled.connect(self._on_hide_bed_toggled)
+        toolbar.addWidget(self._hide_bed_check)
+
         # FW% control: each star line's threshold is peak x (FW%/100). Lower
         # widens the mask, higher tightens it. Re-run detection to apply.
         toolbar.addWidget(QLabel(" FW%:"))
@@ -236,6 +254,11 @@ class MainWindow(QMainWindow):
         self._roi_outline = None
         self._star_mask = None
         self._seg_masks = None
+        self._body_mask = None  # stale for the new patient
+        self._hide_bed_check.blockSignals(True)
+        self._hide_bed_check.setChecked(False)
+        self._hide_bed_check.blockSignals(False)
+        self._hide_bed_check.setEnabled(True)
         self._slice_thresholds = {}  # previous patient's thresholds no longer apply
         self._thr_label.setText("Metal thr: -")
         self._segment_btn.setEnabled(False)
@@ -353,6 +376,46 @@ class MainWindow(QMainWindow):
             f"Segmentation done — dark: {int(dark.sum()):,}  "
             f"bright artifact: {int(bright.sum()):,}  bone: {int(bone.sum()):,}"
         )
+
+    # ---- hide bed ----------------------------------------------------------
+    def _on_hide_bed_toggled(self, checked: bool) -> None:
+        if not checked:
+            self._view.set_body_mask(None)
+            return
+        if self._body_mask is not None:
+            self._view.set_body_mask(self._body_mask)
+            return
+        if self._volume is None:
+            return
+        # First use for this patient: compute the mask on a worker thread.
+        self._hide_bed_check.setEnabled(False)
+        self.statusBar().showMessage("Computing body mask…")
+
+        self._bed_thread = QThread(self)
+        self._bed_worker = BodyMaskWorker(self._volume)
+        self._bed_worker.moveToThread(self._bed_thread)
+        self._bed_thread.started.connect(self._bed_worker.run)
+        self._bed_worker.finished.connect(self._on_body_mask_ready)
+        self._bed_worker.failed.connect(self._on_body_mask_failed)
+        self._bed_worker.finished.connect(self._bed_thread.quit)
+        self._bed_worker.failed.connect(self._bed_thread.quit)
+        self._bed_thread.start()
+
+    def _on_body_mask_ready(self, mask) -> None:
+        self._body_mask = mask
+        self._hide_bed_check.setEnabled(True)
+        # Only apply if the box is still checked (user may have changed
+        # their mind while the mask was computing).
+        if self._hide_bed_check.isChecked():
+            self._view.set_body_mask(mask)
+        self.statusBar().showMessage("Body mask ready — bed hidden.")
+
+    def _on_body_mask_failed(self, message) -> None:
+        self._hide_bed_check.setEnabled(True)
+        self._hide_bed_check.blockSignals(True)
+        self._hide_bed_check.setChecked(False)
+        self._hide_bed_check.blockSignals(False)
+        self.statusBar().showMessage(f"Body mask: {message.splitlines()[0]}")
 
     # ---- export ------------------------------------------------------------
     def _on_export_clicked(self):

@@ -18,6 +18,3 @@ _APP_DIR = os.path.join(_REPO_ROOT, "app")
 
 if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
-
-REPO_ROOT = _REPO_ROOT
-APP_DIR = _APP_DIR

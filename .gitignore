@@ -4,6 +4,9 @@ DODD/
 # Test screenshots
 tests/misc/*.png
 
+# Ad-hoc screenshots dropped in the repo root (keep out of commits)
+/Screenshot*.png
+
 # Python cache
 __pycache__/
 *.pyc

@@ -35,58 +35,13 @@ def hu_to_qimage(slice_hu: np.ndarray, center: float, width: float) -> QImage:
     return image.copy()
 
 
-def hu_to_qimage_with_overlay(
-    slice_hu: np.ndarray,
-    center: float,
-    width: float,
-    mask: np.ndarray,
-    color: tuple[int, int, int] = (255, 0, 0),
-    alpha: float = 0.7,
-) -> QImage:
-    """Like ``hu_to_qimage`` but tints ``mask`` pixels with a translucent color.
-
-    The CT slice is windowed to grayscale exactly as in ``hu_to_qimage``, then
-    promoted to RGB so masked pixels can be alpha-blended toward ``color``.
-    Used to show what metal detection found (red, per the project color code).
-
-    Args:
-        slice_hu: 2D HU array.
-        center, width: window/level, same meaning as ``hu_to_qimage``.
-        mask: 2D boolean array, same shape as ``slice_hu``; True = highlight.
-        color: RGB tint for masked pixels (default red = metal).
-        alpha: blend weight, 0 (invisible) .. 1 (opaque tint).
-
-    Returns:
-        A ``QImage`` (Format_RGB888) that owns its pixel buffer.
-    """
-    width = max(float(width), 1.0)
-    low = center - width / 2.0
-    high = center + width / 2.0
-
-    normalized = (slice_hu.astype(np.float32) - low) / (high - low)
-    np.clip(normalized, 0.0, 1.0, out=normalized)
-    gray = normalized * 255.0  # float, (h, w)
-
-    # Promote grayscale to RGB by repeating the channel, then blend the mask.
-    rgb = np.repeat(gray[:, :, None], 3, axis=2)
-    m = mask.astype(bool)
-    tint = np.asarray(color, dtype=np.float32)
-    rgb[m] = (1.0 - alpha) * rgb[m] + alpha * tint
-
-    buf = np.ascontiguousarray(rgb.astype(np.uint8))
-    h, w, _ = buf.shape
-    # Bytes-per-line = 3 * width for 8-bit RGB.
-    image = QImage(buf.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-    return image.copy()
-
-
 def hu_to_qimage_with_overlays(
     slice_hu: np.ndarray,
     center: float,
     width: float,
     overlays: list[tuple[np.ndarray, tuple[int, int, int], float]],
 ) -> QImage:
-    """Like ``hu_to_qimage_with_overlay`` but accepts multiple colored masks.
+    """Like ``hu_to_qimage`` but alpha-blends colored masks over the slice.
 
     Args:
         slice_hu: 2D HU array.
