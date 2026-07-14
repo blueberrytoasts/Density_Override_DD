@@ -11,7 +11,9 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from pyside_app import bootstrap  # noqa: F401  (side effect: puts app/ on sys.path)
-from core.metal_detection import MetalDetector, MetalDetectionMethod
+from core.metal_detection import (
+    MetalDetector, MetalDetectionMethod, build_star_overlay_mask,
+)
 
 
 class MetalDetectionWorker(QObject):
@@ -49,6 +51,11 @@ class MetalDetectionWorker(QObject):
             if result.get("mask") is None or not np.any(result["mask"]):
                 self.failed.emit("No metal implant detected.")
                 return
+            # Rasterize the recorded star placements here (still off the UI
+            # thread) so the window can toggle the overlay instantly.
+            result["star_mask"] = build_star_overlay_mask(
+                self._volume.shape, result.get("star_profiles", {})
+            )
             self.finished.emit(result)
         except Exception as exc:  # surface any detector error to the UI
             self.failed.emit(f"{type(exc).__name__}: {exc}")

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from pyside_app.slice_view import SliceView
+from pyside_app.hu_render import auto_window_level
 from pyside_app.dicom_loader import DicomLoadWorker
 from pyside_app.metal_worker import MetalDetectionWorker
 from pyside_app.segment_worker import SegmentationWorker, LegacySegmentationWorker
@@ -47,12 +48,27 @@ class MainWindow(QMainWindow):
         # {slice_index: threshold_HU} from the last detection; empty until then.
         self._slice_thresholds: dict[int, float] = {}
 
+        # Named window/level presets as (center, width) in HU. "Metal" is very
+        # wide so 3000+ HU implants don't bloom to solid white and internal
+        # structure/streaks stay visible.
+        self._wl_presets: dict[str, tuple[float, float]] = {
+            "Soft Tissue": (40.0, 400.0),
+            "Bone": (400.0, 1800.0),
+            "Lung": (-600.0, 1500.0),
+            "Metal": (1000.0, 4000.0),
+        }
+        # True while a preset is being applied, so _on_window_changed can tell
+        # preset-driven changes from manual right-drag adjustments.
+        self._applying_wl_preset = False
+
         # Metal mask retained so segmentation can use it after detection.
         self._metal_mask = None
         # Per-component ROI mask (one box per implant) from detection.
         self._roi_mask = None
         # Thin outline of _roi_mask (per-slice box edges) for display.
         self._roi_outline = None
+        # Star-profile placement overlay (lines + center dots) from detection.
+        self._star_mask = None
         # Last segmentation masks so overlays can be recomposed on toggle.
         self._seg_masks: dict | None = None
 
@@ -94,12 +110,14 @@ class MainWindow(QMainWindow):
             ("bright", "#ffff00", "Bright artifact"),
             ("bone",   "#0033cc", "Bone"),
             ("roi",    "#32ff32", "ROI"),
+            ("star",   "#00ffff", "Star profiles"),
         ):
             check = QCheckBox(name)
             swatch = QPixmap(12, 12)
             swatch.fill(QColor(color))
             check.setIcon(QIcon(swatch))
-            check.setChecked(key != "roi")  # ROI outline is opt-in
+            # ROI outline and star-profile placement are diagnostic — opt-in.
+            check.setChecked(key not in ("roi", "star"))
             check.toggled.connect(self._refresh_overlays)
             self._overlay_checks[key] = check
             legend.addWidget(check)
@@ -137,6 +155,9 @@ class MainWindow(QMainWindow):
             "Legacy: pure boolean HU ranges — fast, no discriminator.\n"
             "Star Profile: radial profile analysis to separate bone from artifact streaks."
         )
+        # Star Profile is the method actually used for analysis; default to it
+        # so each session doesn't start on Legacy.
+        self._seg_method_combo.setCurrentIndex(self._seg_method_combo.findData("star"))
         toolbar.addWidget(self._seg_method_combo)
 
         self._export_btn = QPushButton("Export Slice…")
@@ -160,6 +181,21 @@ class MainWindow(QMainWindow):
             "Lower = larger mask, higher = tighter. Re-run Detect Metal to apply."
         )
         toolbar.addWidget(self._fw_spin)
+
+        # W/L presets: Auto re-derives from the volume, named entries are fixed
+        # (center, width) pairs, Custom reflects a manual right-drag.
+        toolbar.addWidget(QLabel(" W/L:"))
+        self._wl_combo = QComboBox()
+        self._wl_combo.addItem("Auto", userData="auto")
+        for name, (center, width) in self._wl_presets.items():
+            self._wl_combo.addItem(f"{name} ({width:.0f}/{center:.0f})", userData=name)
+        self._wl_combo.addItem("Custom", userData="custom")
+        self._wl_combo.setToolTip(
+            "Window/level preset (width/center in HU).\n"
+            "Right-drag on the image fine-tunes and switches to Custom."
+        )
+        self._wl_combo.currentIndexChanged.connect(self._on_wl_preset_changed)
+        toolbar.addWidget(self._wl_combo)
 
         # --- status bar ----------------------------------------------------
         self._hu_label = QLabel("HU: -")
@@ -198,11 +234,17 @@ class MainWindow(QMainWindow):
         self._metal_mask = None
         self._roi_mask = None
         self._roi_outline = None
+        self._star_mask = None
         self._seg_masks = None
         self._slice_thresholds = {}  # previous patient's thresholds no longer apply
         self._thr_label.setText("Metal thr: -")
         self._segment_btn.setEnabled(False)
         self._view.set_volume(volume)
+        # set_volume applied auto W/L; reflect that in the preset combo
+        # (its window_changed just flipped the combo to Custom).
+        self._wl_combo.blockSignals(True)
+        self._wl_combo.setCurrentIndex(self._wl_combo.findData("auto"))
+        self._wl_combo.blockSignals(False)
         self._slice_slider.setEnabled(True)
         self._slice_slider.setMaximum(volume.shape[0] - 1)
         self._slice_slider.setValue(volume.shape[0] // 2)
@@ -245,6 +287,7 @@ class MainWindow(QMainWindow):
         self._metal_mask = result["mask"]
         self._roi_mask = result.get("roi_mask")
         self._roi_outline = self._compute_roi_outline(self._roi_mask)
+        self._star_mask = result.get("star_mask")
         self._seg_masks = None  # previous segmentation no longer matches
         voxels = int(self._metal_mask.sum())
         # Per-slice thresholds (keyed by slice index); keys may be numpy ints.
@@ -372,6 +415,9 @@ class MainWindow(QMainWindow):
                 overlays.append((self._seg_masks["bone"],   (  0,  51, 204), 0.5))  # blue
         if self._roi_outline is not None and show["roi"]:
             overlays.append((self._roi_outline, (50, 255, 50), 0.9))  # lime
+        # Last so the thin lines stay visible on top of the other masks.
+        if self._star_mask is not None and show["star"]:
+            overlays.append((self._star_mask, (0, 255, 255), 0.9))    # cyan
         self._view.set_overlays(overlays)
 
     def _on_segment_failed(self, message):
@@ -387,8 +433,31 @@ class MainWindow(QMainWindow):
         self._slice_slider.blockSignals(False)
         self._update_threshold_label(index)
 
+    def _on_wl_preset_changed(self, _index: int) -> None:
+        """Apply the selected window/level preset to the viewer."""
+        key = self._wl_combo.currentData()
+        if key == "custom":
+            return  # placeholder entry; the current window is already custom
+        if key == "auto":
+            if self._volume is None:
+                return
+            center, width = auto_window_level(self._volume)
+        else:
+            center, width = self._wl_presets[key]
+        self._applying_wl_preset = True
+        try:
+            self._view.set_window(center, width)
+        finally:
+            self._applying_wl_preset = False
+
     def _on_window_changed(self, center, width):
         self._wl_label.setText(f"W/L: {width:.0f}/{center:.0f}")
+        if not self._applying_wl_preset:
+            # Manual right-drag (or volume load) — the window no longer
+            # matches the selected preset, so show Custom.
+            self._wl_combo.blockSignals(True)
+            self._wl_combo.setCurrentIndex(self._wl_combo.findData("custom"))
+            self._wl_combo.blockSignals(False)
 
     def _on_cursor_hu(self, hu):
         self._hu_label.setText("HU: -" if hu is None else f"HU: {hu}")

@@ -99,6 +99,9 @@ class MetalDetector:
         if use_star_profiles:
             refined_mask = np.zeros_like(initial_mask, dtype=bool)
             slice_thresholds = {}  # Dict mapping slice index -> threshold
+            # {slice_index: [{'center_y', 'center_x', 'bounds'}, ...]} — where
+            # star profiles were shot from, recorded for visualization.
+            star_profiles = {}
 
             # Find center of initial detection for star profile analysis
             center_z = int(np.mean(z_coords))
@@ -151,6 +154,13 @@ class MetalDetector:
                         'x_max': min(ct_volume.shape[2], comp_center_x + 100)
                     }
 
+                    # Record where this star was placed (for visualization).
+                    star_profiles.setdefault(int(z), []).append({
+                        'center_y': comp_center_y,
+                        'center_x': comp_center_x,
+                        'bounds': comp_roi,
+                    })
+
                     # Calculate star profile threshold for this component
                     comp_threshold = self._calculate_star_threshold(
                         ct_volume[z], comp_center_y, comp_center_x,
@@ -178,6 +188,7 @@ class MetalDetector:
             # Use initial threshold directly - anything above 2500 HU is metal
             refined_mask = initial_mask
             slice_thresholds = {0: initial_threshold}  # Fallback dict
+            star_profiles = {}  # no star analysis ran
 
         # Create individual ROIs for components
         labeled, num_components = label(refined_mask)
@@ -309,6 +320,7 @@ class MetalDetector:
             'threshold_evolution': slice_thresholds,
             'individual_regions': individual_regions,
             'roi_mask': self._regions_to_roi_mask(ct_volume.shape, individual_regions),
+            'star_profiles': star_profiles,
             'center_coords': (int(np.mean(z_coords_roi_filled)), int(np.mean(y_coords_roi_filled)), int(np.mean(x_coords_roi_filled))) if 'z_coords_roi_filled' in locals() and len(z_coords_roi_filled) > 0 else (int(np.mean(z_coords_roi)), int(np.mean(y_coords_roi)), int(np.mean(x_coords_roi))),
             'method': 'adaptive_3d',
             'valid_roi_slices': valid_z_slices_filled if 'valid_z_slices_filled' in locals() and valid_z_slices_filled else (valid_z_slices if 'valid_z_slices' in locals() and valid_z_slices else list(range(roi_bounds['z_min'], roi_bounds['z_max']))),
@@ -484,27 +496,8 @@ class MetalDetector:
         max_slice_hu = np.max(slice_data)
         metal_filter_threshold = max_slice_hu * 0.75
 
-        # Calculate intermediate points for 16-point star
-        y_mid = (y_min + y_max) // 2
-        x_mid = (x_min + x_max) // 2
-
-        y_q1 = (y_min + y_mid) // 2
-        y_q3 = (y_mid + y_max) // 2
-        x_q1 = (x_min + x_mid) // 2
-        x_q3 = (x_mid + x_max) // 2
-
-        # Define 16 endpoints (same as visualization)
-        endpoints = [
-            # Cardinals (N, S, E, W)
-            (y_min, x_mid), (y_max, x_mid), (y_mid, x_max), (y_mid, x_min),
-            # Primary diagonals
-            (y_min, x_min), (y_min, x_max), (y_max, x_min), (y_max, x_max),
-            # Secondary points
-            (y_min, x_q1), (y_min, x_q3),
-            (y_max, x_q1), (y_max, x_q3),
-            (y_q1, x_min), (y_q3, x_min),
-            (y_q1, x_max), (y_q3, x_max)
-        ]
+        # 16 endpoints shared with the visualization overlay
+        endpoints = compute_star_endpoints(y_min, y_max, x_min, x_max)
 
         thresholds = []
 
@@ -584,32 +577,28 @@ class MetalDetector:
             'center_coords': None,
             'individual_regions': {},
             'roi_mask': None,
+            'star_profiles': {},
             'method': self.method.value,
             'metadata': {}
         }
 
 
-def get_star_profile_lines(slice_2d: np.ndarray, center_y: int, center_x: int, bounds: Dict) -> List:
+def compute_star_endpoints(y_min: int, y_max: int, x_min: int, x_max: int) -> List[Tuple[int, int]]:
+    """The 16 (y, x) endpoints of a star centered in the given bounds.
+
+    Single source of truth for the star geometry — used both by the FW%
+    threshold calculation and by visualization overlays, so what is drawn is
+    exactly what was analyzed.
     """
-    Generate 16 star profile lines from center to boundaries.
-    Used for visualization of the star profile algorithm.
-    """
-    from skimage.draw import line
-    
-    y_min, y_max = bounds['y_min'], bounds['y_max']
-    x_min, x_max = bounds['x_min'], bounds['x_max']
-    
-    # Calculate intermediate points for 16-point star
     y_mid = (y_min + y_max) // 2
     x_mid = (x_min + x_max) // 2
-    
+
     y_q1 = (y_min + y_mid) // 2
     y_q3 = (y_mid + y_max) // 2
     x_q1 = (x_min + x_mid) // 2
     x_q3 = (x_mid + x_max) // 2
-    
-    # Define 16 endpoints
-    endpoints = [
+
+    return [
         # Cardinals (N, S, E, W)
         (y_min, x_mid), (y_max, x_mid), (y_mid, x_max), (y_mid, x_min),
         # Primary diagonals
@@ -620,7 +609,58 @@ def get_star_profile_lines(slice_2d: np.ndarray, center_y: int, center_x: int, b
         (y_q1, x_min), (y_q3, x_min),
         (y_q1, x_max), (y_q3, x_max)
     ]
-    
+
+
+def build_star_overlay_mask(shape: Tuple[int, int, int],
+                            star_profiles: Dict[int, List[Dict]]) -> Optional[np.ndarray]:
+    """Rasterize recorded star-profile placements into a 3D bool overlay mask.
+
+    Args:
+        shape: volume shape (z, y, x) the mask must match.
+        star_profiles: the ``star_profiles`` key of a detection result —
+            {slice_index: [{'center_y', 'center_x', 'bounds'}, ...]}.
+
+    Returns:
+        Bool mask with each star's 16 lines (1 px) plus a small disk at each
+        center, or None if no profiles were recorded.
+    """
+    if not star_profiles:
+        return None
+    from skimage.draw import line, disk
+
+    mask = np.zeros(shape, dtype=bool)
+    h, w = shape[1], shape[2]
+    for z, placements in star_profiles.items():
+        if not (0 <= z < shape[0]):
+            continue
+        for placement in placements:
+            cy = int(placement['center_y'])
+            cx = int(placement['center_x'])
+            b = placement['bounds']
+            for end_y, end_x in compute_star_endpoints(
+                    b['y_min'], b['y_max'], b['x_min'], b['x_max']):
+                end_y = max(0, min(h - 1, end_y))
+                end_x = max(0, min(w - 1, end_x))
+                rr, cc = line(cy, cx, end_y, end_x)
+                valid = (rr >= 0) & (rr < h) & (cc >= 0) & (cc < w)
+                mask[z, rr[valid], cc[valid]] = True
+            # Small dot marking the profile origin (visual aid only).
+            rr, cc = disk((cy, cx), 2, shape=(h, w))
+            mask[z, rr, cc] = True
+    return mask
+
+
+def get_star_profile_lines(slice_2d: np.ndarray, center_y: int, center_x: int, bounds: Dict) -> List:
+    """
+    Generate 16 star profile lines from center to boundaries.
+    Used for visualization of the star profile algorithm.
+    """
+    from skimage.draw import line
+
+    endpoints = compute_star_endpoints(
+        bounds['y_min'], bounds['y_max'], bounds['x_min'], bounds['x_max']
+    )
+
     profiles = []
     
     for end_y, end_x in endpoints:
