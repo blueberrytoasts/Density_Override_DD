@@ -104,6 +104,14 @@ class SegmentationWorker(QObject):
         metal_mask: np.ndarray,
         num_angles: int = 32,
         roi_mask: np.ndarray | None = None,
+        bright_low: float = _BRIGHT_LOW,
+        bright_high: float = _BRIGHT_HIGH,
+        bone_low: float = _BONE_LOW,
+        bone_high: float = _BONE_HIGH,
+        w_hu: float = 0.45,
+        w_width: float = 0.35,
+        w_smooth: float = 0.25,
+        w_gradient: float = 0.25,
     ):
         super().__init__()
         self._volume = volume
@@ -111,6 +119,14 @@ class SegmentationWorker(QObject):
         self._metal_mask = metal_mask
         self._num_angles = num_angles
         self._roi_mask = roi_mask
+        self._bright_low = bright_low
+        self._bright_high = bright_high
+        self._bone_low = bone_low
+        self._bone_high = bone_high
+        self._w_hu = w_hu
+        self._w_width = w_width
+        self._w_smooth = w_smooth
+        self._w_gradient = w_gradient
 
     def run(self) -> None:
         try:
@@ -128,8 +144,8 @@ class SegmentationWorker(QObject):
             )
 
             bright_mask = (
-                (self._volume >= _BRIGHT_LOW)
-                & (self._volume <= _BRIGHT_HIGH)
+                (self._volume >= self._bright_low)
+                & (self._volume <= self._bright_high)
                 & ~dark_mask
                 & constraint
             )
@@ -141,8 +157,12 @@ class SegmentationWorker(QObject):
                 bright_mask,
                 self._spacing,
                 num_angles=self._num_angles,
-                bone_hu_low=_BONE_LOW,
-                bone_hu_high=_BONE_HIGH,
+                bone_hu_low=self._bone_low,
+                bone_hu_high=self._bone_high,
+                w_hu=self._w_hu,
+                w_width=self._w_width,
+                w_smooth=self._w_smooth,
+                w_gradient=self._w_gradient,
                 use_gpu=False,
             )
 

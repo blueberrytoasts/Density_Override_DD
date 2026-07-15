@@ -29,6 +29,24 @@ The old bug: `metal_detection.py` found separate connected metal components per 
 
 Verified with a synthetic bilateral phantom (2 regions per slice, centers on each implant, gap between implants excluded from ROI mask) and a unilateral phantom (1 region, unchanged behavior).
 
+### Per-Implant Discriminator Stars — FIXED (2026-07-15)
+
+The star-profile discriminator had the same averaged-centroid flaw as the old ROI bug: it shot one star per slice from the mean of *all* metal pixels, which for bilateral implants lands between the hips — half the rays sampled empty midline tissue and pixels were judged against profiles from the wrong place.
+
+**Fix (on `feature/pyside-app`):**
+- `app/core/discrimination.py`: new `_get_slice_stars()` — one star per metal implant per slice. Components within 10 px (dilation-merge) are grouped so a fragmented implant (cup + screws) gets ONE star; groups <10 metal px skipped as noise; falls back to overall centroid if all tiny. `_discriminate_star_profile` assigns each bright pixel to its nearest star's rays.
+- Benefits both apps automatically (Streamlit `main.py:944` and `pyside_app/segment_worker.py:137` both use `DiscriminationMethod.STAR_PROFILE`).
+- Debug/poster tool: `tools/visualize_discriminator.py "data/HIP3 Patient" [--slice N] [--angles N]` renders the exact stars + per-ray profiles + per-pixel verdicts (blue=bone, yellow=artifact). Verified: HIP3 slice 161 → 2 stars (one per hip); HIP1 slice 90 → 1 star.
+- Expect classification shifts on bilateral patients (HIP3 slice 161: bone 1000→618, artifact 543→925 of 1543 candidates) — rays now start inside metal so near-metal streaks are judged on real local geometry.
+
+### Discrimination Tuning Controls in PySide — ADDED (2026-07-15)
+
+The star-profile discriminator's HU ranges and the four feature weights were hardcoded. Now exposed on a second PySide toolbar ("Discrimination") for poster experimentation:
+- **Bright HU range** (gate) and **Bone HU range** (vote band) as HU spin boxes.
+- **Weights** `w_hu / w_width / w_smooth / w_gradient` (defaults 0.45/0.35/0.25/0.25) as 0–2 spin boxes, plus a **Reset** button.
+- Wiring: `discrimination.py:_discriminate_star_profile` + `_analyze_profile_characteristics` take `w_hu/w_width/w_smooth/w_gradient`; confidence is normalized by total weight so it stays in [0,1]. `segment_worker.py:SegmentationWorker` accepts `bright_low/high`, `bone_low/high`, and the four weights; `main_window.py` passes the spin-box values on Segment. All apply on the next Segment run (no re-detect needed).
+- **Behavior-preserving at defaults:** verified HIP3 slice 161 still gives bone=618, artifact=925 with default weights. Doc: `docs/ALGORITHM.md`.
+
 ### What's Working
 - Fast slice viewer: PIL-based rendering (~10ms) via `fast_render_slice()` in `app/visualization.py`
 - `@st.fragment` isolated viewer — slice navigation doesn't trigger full page rerun

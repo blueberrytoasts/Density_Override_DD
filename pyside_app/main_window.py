@@ -13,8 +13,8 @@ import numpy as np
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
-    QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
+    QMainWindow, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from pyside_app.slice_view import SliceView
@@ -215,6 +215,59 @@ class MainWindow(QMainWindow):
         self._wl_combo.currentIndexChanged.connect(self._on_wl_preset_changed)
         toolbar.addWidget(self._wl_combo)
 
+        # --- second toolbar: star-profile discrimination tuning ------------
+        # All of these apply on the next "Segment Artifacts" run (Star Profile
+        # method). They do not require re-detecting metal.
+        self.addToolBarBreak()
+        disc_bar = self.addToolBar("Discrimination")
+
+        disc_bar.addWidget(QLabel("Bright HU (gate):"))
+        self._bright_low_spin = self._make_hu_spin(
+            -1024, 5000, 200,
+            "Lower bound of the bright candidate pool. Pixels outside the\n"
+            "bright range are never judged (not bone, not bright artifact).")
+        self._bright_high_spin = self._make_hu_spin(
+            -1024, 5000, 2500,
+            "Upper bound of the bright candidate pool.")
+        disc_bar.addWidget(self._bright_low_spin)
+        disc_bar.addWidget(QLabel("–"))
+        disc_bar.addWidget(self._bright_high_spin)
+
+        disc_bar.addWidget(QLabel("   Bone HU (vote band):"))
+        self._bone_low_spin = self._make_hu_spin(
+            -1024, 5000, 400,
+            "Bone HU band used by the HU vote (not a hard gate). Pixels inside\n"
+            "this band are pushed toward 'bone'; the shape votes can override it.")
+        self._bone_high_spin = self._make_hu_spin(
+            -1024, 5000, 1800,
+            "Upper bound of the bone HU vote band.")
+        disc_bar.addWidget(self._bone_low_spin)
+        disc_bar.addWidget(QLabel("–"))
+        disc_bar.addWidget(self._bone_high_spin)
+
+        # Weights: each feature votes ±weight toward bone; bone_score>0 => bone.
+        disc_bar.addWidget(QLabel("   Weights  HU:"))
+        self._w_hu_spin = self._make_weight_spin(
+            0.45, "Weight of the HU-band vote (default 0.45, the largest).")
+        disc_bar.addWidget(self._w_hu_spin)
+        disc_bar.addWidget(QLabel("width:"))
+        self._w_width_spin = self._make_weight_spin(
+            0.35, "Weight of the peak-width vote (broad = bone).")
+        disc_bar.addWidget(self._w_width_spin)
+        disc_bar.addWidget(QLabel("smooth:"))
+        self._w_smooth_spin = self._make_weight_spin(
+            0.25, "Weight of the smoothness vote (smooth = bone).")
+        disc_bar.addWidget(self._w_smooth_spin)
+        disc_bar.addWidget(QLabel("grad:"))
+        self._w_gradient_spin = self._make_weight_spin(
+            0.25, "Weight of the gradient vote (gentle slope = bone).")
+        disc_bar.addWidget(self._w_gradient_spin)
+
+        self._reset_tuning_btn = QPushButton("Reset")
+        self._reset_tuning_btn.setToolTip("Restore all discrimination values to defaults.")
+        self._reset_tuning_btn.clicked.connect(self._on_reset_tuning)
+        disc_bar.addWidget(self._reset_tuning_btn)
+
         # --- status bar ----------------------------------------------------
         self._hu_label = QLabel("HU: -")
         self.statusBar().addPermanentWidget(self._hu_label)
@@ -338,6 +391,37 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Detection: {message.splitlines()[0]}")
 
     # ---- artifact segmentation -------------------------------------------
+    @staticmethod
+    def _make_hu_spin(low, high, value, tooltip):
+        spin = QSpinBox()
+        spin.setRange(low, high)
+        spin.setValue(value)
+        spin.setSingleStep(50)
+        spin.setSuffix(" HU")
+        spin.setToolTip(tooltip)
+        spin.setMaximumWidth(90)
+        return spin
+
+    @staticmethod
+    def _make_weight_spin(value, tooltip):
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 2.0)
+        spin.setValue(value)
+        spin.setSingleStep(0.05)
+        spin.setDecimals(2)
+        spin.setToolTip(tooltip)
+        spin.setMaximumWidth(64)
+        return spin
+
+    def _on_reset_tuning(self):
+        for spin, default in (
+            (self._bright_low_spin, 200), (self._bright_high_spin, 2500),
+            (self._bone_low_spin, 400), (self._bone_high_spin, 1800),
+            (self._w_hu_spin, 0.45), (self._w_width_spin, 0.35),
+            (self._w_smooth_spin, 0.25), (self._w_gradient_spin, 0.25),
+        ):
+            spin.setValue(default)
+
     def _on_segment_clicked(self):
         if self._volume is None or self._metal_mask is None:
             return
@@ -356,6 +440,14 @@ class MainWindow(QMainWindow):
             self._segment_worker = SegmentationWorker(
                 self._volume, self._spacing, self._metal_mask,
                 roi_mask=self._roi_mask,
+                bright_low=self._bright_low_spin.value(),
+                bright_high=self._bright_high_spin.value(),
+                bone_low=self._bone_low_spin.value(),
+                bone_high=self._bone_high_spin.value(),
+                w_hu=self._w_hu_spin.value(),
+                w_width=self._w_width_spin.value(),
+                w_smooth=self._w_smooth_spin.value(),
+                w_gradient=self._w_gradient_spin.value(),
             )
         self._segment_worker.moveToThread(self._segment_thread)
         self._segment_thread.started.connect(self._segment_worker.run)

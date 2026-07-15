@@ -35,7 +35,9 @@
       "PowerShell(python -c \"import pyside_app.main_window, pyside_app.slice_view, pyside_app.metal_worker; print\\('imports OK'\\)\")",
       "Bash(npm update:*)",
       "Bash(git -C /c/GitHub/Density_Override_DD status --short)",
-      "Bash(git -C /c/GitHub/Density_Override_DD log --oneline -5)"
+      "Bash(git -C /c/GitHub/Density_Override_DD log --oneline -5)",
+      "Bash(git -C /c/GitHub/Density_Override_DD log --oneline main..feature/pyside-app)",
+      "Bash(git -C /c/GitHub/Density_Override_DD diff --stat main...feature/pyside-app)"
     ],
     "deny": [],
     "ask": []

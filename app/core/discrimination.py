@@ -412,6 +412,10 @@ class ArtifactDiscriminator:
                                    bone_hu_high: float = 1500.0,
                                    tissue_hu_low: float = -100.0,
                                    tissue_hu_high: float = 300.0,
+                                   w_hu: float = 0.45,
+                                   w_width: float = 0.35,
+                                   w_smooth: float = 0.25,
+                                   w_gradient: float = 0.25,
                                    use_gpu: bool = True) -> Dict:
         """
         Star profile-based discrimination with tissue classification.
@@ -458,18 +462,14 @@ class ArtifactDiscriminator:
             if not np.any(bright_mask[z]) or not np.any(metal_mask[z]):
                 continue
 
-            # Find metal center on this slice
-            metal_coords = np.where(metal_mask[z])
-            if len(metal_coords[0]) == 0:
+            # One star per connected metal component (bilateral-safe): with two
+            # implants, the all-metal centroid lands between them and the rays
+            # sample anatomy unrelated to either implant.
+            stars = self._get_slice_stars(ct_volume[z], metal_mask[z], num_angles)
+            if not stars:
                 continue
 
-            center_y = int(np.mean(metal_coords[0]))
-            center_x = int(np.mean(metal_coords[1]))
-
-            # Get star profiles for this slice
-            profiles = self._get_star_profiles_detailed(
-                ct_volume[z], center_y, center_x, num_angles
-            )
+            star_centers = np.array([[s['center_y'], s['center_x']] for s in stars])
 
             # Analyze each bright pixel on this slice
             bright_coords = np.where(bright_mask[z])
@@ -478,7 +478,13 @@ class ArtifactDiscriminator:
                 pixel_y = bright_coords[0][i]
                 pixel_x = bright_coords[1][i]
 
-                # Calculate angle to this pixel from metal center
+                # Judge this pixel using the star of its nearest metal component
+                d2 = (star_centers[:, 0] - pixel_y) ** 2 + (star_centers[:, 1] - pixel_x) ** 2
+                star = stars[int(np.argmin(d2))]
+                center_y = star['center_y']
+                center_x = star['center_x']
+
+                # Calculate angle to this pixel from its component's center
                 dy = pixel_y - center_y
                 dx = pixel_x - center_x
                 angle = np.arctan2(dy, dx)
@@ -487,10 +493,10 @@ class ArtifactDiscriminator:
 
                 # Find nearest profile
                 profile_idx = int((angle / (2 * np.pi)) * num_angles) % num_angles
-                if profile_idx >= len(profiles):
+                if profile_idx >= len(star['profiles']):
                     continue
 
-                profile = profiles[profile_idx]
+                profile = star['profiles'][profile_idx]
 
                 # Calculate distance from metal center
                 distance_voxels = np.sqrt(dy**2 + dx**2)
@@ -504,7 +510,9 @@ class ArtifactDiscriminator:
                     profile, distance_mm, spacing,
                     pixel_hu=pixel_hu,
                     bone_hu_low=bone_hu_low,
-                    bone_hu_high=bone_hu_high
+                    bone_hu_high=bone_hu_high,
+                    w_hu=w_hu, w_width=w_width,
+                    w_smooth=w_smooth, w_gradient=w_gradient
                 )
 
                 # Classify based on characteristics
@@ -595,6 +603,59 @@ class ArtifactDiscriminator:
             'tissue_ratio': tissue_count / total_voxels
         }
 
+    def _get_slice_stars(self, slice_data: np.ndarray, metal_slice: np.ndarray,
+                         num_angles: int, min_component_size: int = 10,
+                         merge_distance_px: int = 10) -> list:
+        """
+        Build one star (center + radial profiles) per metal implant on this
+        slice, so bilateral implants each get their own star instead of a
+        single star centered between them.
+
+        A single implant often fragments into several connected components
+        (cup, screws, satellite bits), so components within merge_distance_px
+        of each other are grouped into one star; bilateral implants sit far
+        apart and stay separate. Groups with fewer than min_component_size
+        metal pixels are ignored as noise; if all groups are tiny, falls back
+        to a single star at the overall metal centroid.
+
+        Returns list of dicts: {'center_y', 'center_x', 'profiles'}.
+        """
+        from scipy.ndimage import label as ndi_label, binary_dilation
+
+        merged = binary_dilation(metal_slice, iterations=merge_distance_px)
+        labeled, n_components = ndi_label(
+            merged, structure=np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]])
+        )
+
+        stars = []
+        for comp_id in range(1, n_components + 1):
+            # Centroid from the actual metal pixels, not the dilated blob
+            component = metal_slice & (labeled == comp_id)
+            if np.sum(component) < min_component_size:
+                continue
+            ys, xs = np.where(component)
+            center_y, center_x = int(np.mean(ys)), int(np.mean(xs))
+            stars.append({
+                'center_y': center_y,
+                'center_x': center_x,
+                'profiles': self._get_star_profiles_detailed(
+                    slice_data, center_y, center_x, num_angles
+                ),
+            })
+
+        if not stars and np.any(metal_slice):
+            ys, xs = np.where(metal_slice)
+            center_y, center_x = int(np.mean(ys)), int(np.mean(xs))
+            stars.append({
+                'center_y': center_y,
+                'center_x': center_x,
+                'profiles': self._get_star_profiles_detailed(
+                    slice_data, center_y, center_x, num_angles
+                ),
+            })
+
+        return stars
+
     def _get_star_profiles_detailed(self, slice_data: np.ndarray, center_y: int,
                                      center_x: int, num_angles: int) -> list:
         """
@@ -648,7 +709,11 @@ class ArtifactDiscriminator:
                                          spacing: Tuple[float, float, float],
                                          pixel_hu: float = None,
                                          bone_hu_low: float = 150.0,
-                                         bone_hu_high: float = 1500.0) -> Dict:
+                                         bone_hu_high: float = 1500.0,
+                                         w_hu: float = 0.45,
+                                         w_width: float = 0.35,
+                                         w_smooth: float = 0.25,
+                                         w_gradient: float = 0.25) -> Dict:
         """
         Analyze profile characteristics at a given distance.
 
@@ -679,29 +744,31 @@ class ArtifactDiscriminator:
         smoothness = self._calculate_smoothness_score(grad_window)
         gradient_magnitude = np.abs(np.mean(grad_window))
 
-        # Bone scoring: broad peaks, smooth, gradual gradients, appropriate HU
-        # Total possible range: -1.3 to +1.3 (4 features)
+        # Bone scoring: broad peaks, smooth, gradual gradients, appropriate HU.
+        # Each feature votes ±its weight; weights are tunable from the UI so the
+        # relative influence of shape vs. HU can be explored. Score range is
+        # ±(w_width + w_smooth + w_gradient + w_hu).
         bone_score = 0.0
 
-        # Peak width criterion (bone: 3-5mm, artifact: <2mm) - weight: 0.35
+        # Peak width criterion (bone: 3-5mm, artifact: <2mm)
         if peak_width_mm > 3.0:
-            bone_score += 0.35
+            bone_score += w_width
         elif peak_width_mm < 2.0:
-            bone_score -= 0.35
+            bone_score -= w_width
 
-        # Smoothness criterion (higher = more bone-like) - weight: 0.25
+        # Smoothness criterion (higher = more bone-like)
         if smoothness > 0.7:
-            bone_score += 0.25
+            bone_score += w_smooth
         elif smoothness < 0.3:
-            bone_score -= 0.25
+            bone_score -= w_smooth
 
-        # Gradient criterion (lower = more bone-like) - weight: 0.25
+        # Gradient criterion (lower = more bone-like)
         if gradient_magnitude < 50:
-            bone_score += 0.25
+            bone_score += w_gradient
         elif gradient_magnitude > 150:
-            bone_score -= 0.25
+            bone_score -= w_gradient
 
-        # HU range criterion (within bone range = bone-like) - weight: 0.45
+        # HU range criterion (within bone range = bone-like)
         # This gives significant influence to user-specified HU range
         hu_score = 0.0
         if pixel_hu is not None:
@@ -715,7 +782,7 @@ class ArtifactDiscriminator:
                 # Favor mid-range values as most bone-like
                 distance_from_center = abs(pixel_hu - bone_hu_center)
                 normalized_distance = distance_from_center / (bone_hu_range / 2.0) if bone_hu_range > 0 else 0
-                hu_score = 0.45 * (1.0 - 0.5 * normalized_distance)  # 0.225 to 0.45
+                hu_score = w_hu * (1.0 - 0.5 * normalized_distance)  # 0.5*w_hu to w_hu
             else:
                 # Outside bone range: negative score proportional to how far outside
                 if pixel_hu < bone_hu_low:
@@ -724,13 +791,17 @@ class ArtifactDiscriminator:
                     distance_outside = pixel_hu - bone_hu_high
                 # Penalize more heavily as we get further from the range
                 penalty = min(1.0, distance_outside / 500.0)  # Max penalty at 500 HU outside
-                hu_score = -0.45 * penalty
+                hu_score = -w_hu * penalty
 
             bone_score += hu_score
 
-        # Convert to confidence (0 to 1)
-        # Score range is now approximately -1.3 to +1.3
-        confidence = (bone_score + 1.3) / 2.6  # Normalize to [0, 1]
+        # Convert to confidence (0 to 1). Normalize by the total possible
+        # magnitude so confidence stays in [0,1] as weights change.
+        max_score = w_width + w_smooth + w_gradient + (w_hu if pixel_hu is not None else 0.0)
+        if max_score > 0:
+            confidence = (bone_score + max_score) / (2.0 * max_score)
+        else:
+            confidence = 0.5
         confidence = np.clip(confidence, 0.0, 1.0)
 
         return {
