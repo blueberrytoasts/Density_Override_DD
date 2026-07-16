@@ -412,6 +412,9 @@ class ArtifactDiscriminator:
                                    bone_hu_high: float = 1500.0,
                                    tissue_hu_low: float = -100.0,
                                    tissue_hu_high: float = 300.0,
+                                   ctx_bone_low: float = None,
+                                   ctx_bone_high: float = None,
+                                   ctx_window: int = 5,
                                    w_hu: float = 0.45,
                                    w_width: float = 0.35,
                                    w_smooth: float = 0.25,
@@ -448,10 +451,22 @@ class ArtifactDiscriminator:
         from scipy.ndimage import gaussian_filter1d
         from skimage.draw import line
 
+        # Context bands for the "over bone vs. over tissue" sub-typing (Decision
+        # 2). Kept separate from the bone-vs-artifact vote band (Decision 1) so
+        # the two can be tuned independently. Default to the vote band when the
+        # caller doesn't override, preserving prior behavior.
+        if ctx_bone_low is None:
+            ctx_bone_low = bone_hu_low
+        if ctx_bone_high is None:
+            ctx_bone_high = bone_hu_high
+
         bone_mask = np.zeros_like(bright_mask)
         artifact_bone_mask = np.zeros_like(bright_mask)  # Artifacts over bone
         artifact_tissue_mask = np.zeros_like(bright_mask)  # Artifacts over soft tissue
         confidence_map = np.zeros_like(ct_volume, dtype=float)
+        # Where each slice's stars were placed, for the toggleable overlay:
+        # {slice_index: [(center_y, center_x), ...]}
+        slice_star_centers = {}
 
         # Calculate distance from metal for tie-breaking (GPU accelerated)
         inverted_metal = np.logical_not(metal_mask)
@@ -470,6 +485,9 @@ class ArtifactDiscriminator:
                 continue
 
             star_centers = np.array([[s['center_y'], s['center_x']] for s in stars])
+            slice_star_centers[int(z)] = [
+                (int(s['center_y']), int(s['center_x'])) for s in stars
+            ]
 
             # Analyze each bright pixel on this slice
             bright_coords = np.where(bright_mask[z])
@@ -526,8 +544,9 @@ class ArtifactDiscriminator:
                     # Use neighborhood analysis to determine context
                     context = self._analyze_neighborhood_context(
                         ct_volume, z, pixel_y, pixel_x,
-                        bone_hu_low, bone_hu_high,
-                        tissue_hu_low, tissue_hu_high
+                        ctx_bone_low, ctx_bone_high,
+                        tissue_hu_low, tissue_hu_high,
+                        window_size=ctx_window,
                     )
 
                     dist_cm = distance_from_metal[z, pixel_y, pixel_x]
@@ -557,12 +576,16 @@ class ArtifactDiscriminator:
             'artifact_tissue_mask': artifact_tissue_mask,
             'confidence_map': confidence_map,
             'method': 'star_profile',
+            'star_centers': slice_star_centers,  # {z: [(cy, cx), ...]} for overlay
             'metadata': {
                 'num_angles': num_angles,
                 'bone_hu_low': bone_hu_low,
                 'bone_hu_high': bone_hu_high,
                 'tissue_hu_low': tissue_hu_low,
                 'tissue_hu_high': tissue_hu_high,
+                'ctx_bone_low': ctx_bone_low,
+                'ctx_bone_high': ctx_bone_high,
+                'ctx_window': ctx_window,
                 'bone_voxels': np.sum(bone_mask),
                 'artifact_bone_voxels': np.sum(artifact_bone_mask),
                 'artifact_tissue_voxels': np.sum(artifact_tissue_mask),
@@ -894,6 +917,49 @@ class ArtifactDiscriminator:
             'method': self.method.value,
             'metadata': {}
         }
+
+
+def build_discriminator_star_overlay(shape, star_centers, num_angles,
+                                     radius_px=130):
+    """Rasterize the discriminator's per-slice star placements into a 3D bool
+    overlay mask, so the app can toggle "where the discriminator shot its rays".
+
+    Args:
+        shape: volume shape (z, y, x) the mask must match.
+        star_centers: the ``star_centers`` key of a star-profile discrimination
+            result — {slice_index: [(center_y, center_x), ...]}.
+        num_angles: number of rays per star (same value passed to discriminate).
+        radius_px: ray length in pixels. The discriminator's rays formally run
+            to the image edge, but they are drawn capped here so the overlay
+            stays readable; the geometry (evenly spaced angles from the metal-
+            component centroid) matches ``_get_star_profiles_detailed``.
+
+    Returns:
+        Bool mask with each star's ``num_angles`` rays (1 px) plus a small disk
+        at each center, or None if no stars were recorded.
+    """
+    if not star_centers:
+        return None
+    from skimage.draw import line, disk
+
+    mask = np.zeros(shape, dtype=bool)
+    h, w = shape[1], shape[2]
+    for z, centers in star_centers.items():
+        if not (0 <= z < shape[0]):
+            continue
+        for cy, cx in centers:
+            cy, cx = int(cy), int(cx)
+            for i in range(num_angles):
+                angle = 2 * np.pi * i / num_angles
+                end_y = max(0, min(h - 1, int(cy + radius_px * np.sin(angle))))
+                end_x = max(0, min(w - 1, int(cx + radius_px * np.cos(angle))))
+                rr, cc = line(cy, cx, end_y, end_x)
+                valid = (rr >= 0) & (rr < h) & (cc >= 0) & (cc < w)
+                mask[z, rr[valid], cc[valid]] = True
+            # Small dot marking each star's origin (the metal-component centroid)
+            rr, cc = disk((cy, cx), 3, shape=(h, w))
+            mask[z, rr, cc] = True
+    return mask
 
 
 # Convenience functions for backward compatibility

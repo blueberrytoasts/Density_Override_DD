@@ -11,7 +11,7 @@ responsive; the window owns the thread/worker references for their lifetime.
 """
 import numpy as np
 from PySide6.QtCore import Qt, QThread
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
     QMainWindow, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
@@ -21,8 +21,35 @@ from pyside_app.slice_view import SliceView
 from pyside_app.hu_render import auto_window_level
 from pyside_app.dicom_loader import DicomLoadWorker
 from pyside_app.metal_worker import MetalDetectionWorker
-from pyside_app.segment_worker import SegmentationWorker, LegacySegmentationWorker
+from pyside_app.segment_worker import (
+    SegmentationWorker, LegacySegmentationWorker, ContextSplitWorker,
+)
 from pyside_app.body_mask_worker import BodyMaskWorker
+
+
+def _autocrop_to_content(image: QImage, threshold: int = 10,
+                         margin: int = 12) -> QImage:
+    """Crop the black surround off a rendered slice, keeping a margin.
+
+    Air renders as (near-)black at any sane window/level, so the content
+    bounding box is simply "pixels brighter than threshold". Returns the
+    image unchanged if it is entirely black.
+    """
+    gray = image.convertToFormat(QImage.Format.Format_Grayscale8)
+    h, w = gray.height(), gray.width()
+    buf = np.frombuffer(gray.constBits(), dtype=np.uint8)
+    buf = buf.reshape(h, gray.bytesPerLine())[:, :w]
+    rows = np.any(buf > threshold, axis=1)
+    cols = np.any(buf > threshold, axis=0)
+    if not rows.any():
+        return image
+    top, bottom = np.where(rows)[0][[0, -1]]
+    left, right = np.where(cols)[0][[0, -1]]
+    top = max(int(top) - margin, 0)
+    left = max(int(left) - margin, 0)
+    bottom = min(int(bottom) + margin, h - 1)
+    right = min(int(right) + margin, w - 1)
+    return image.copy(left, top, right - left + 1, bottom - top + 1)
 
 
 class MainWindow(QMainWindow):
@@ -41,6 +68,21 @@ class MainWindow(QMainWindow):
 
         self._segment_thread: QThread | None = None
         self._segment_worker: SegmentationWorker | None = None
+
+        # Lazy over-bone/over-tissue splits, keyed by parent mask kind
+        # ("bright"/"dark"): computed on demand the first time a split overlay
+        # is viewed (expensive per-voxel loop). Star-profile runs get the
+        # bright split eagerly from the discriminator; legacy runs get both
+        # lazily.
+        self._ctx_threads: dict[str, QThread] = {}
+        self._ctx_workers: dict[str, ContextSplitWorker] = {}
+        # The parent mask an in-flight split is being computed against
+        # (identity check so a stale result isn't painted onto a newer
+        # segmentation).
+        self._ctx_for: dict[str, object] = {}
+        # Context HU bands captured at the last Segment run, so the lazy
+        # splits match that segmentation rather than the live spin boxes.
+        self._seg_ctx_bands: tuple | None = None
 
         self._bed_thread: QThread | None = None
         self._bed_worker: BodyMaskWorker | None = None
@@ -75,6 +117,8 @@ class MainWindow(QMainWindow):
         self._roi_outline = None
         # Star-profile placement overlay (lines + center dots) from detection.
         self._star_mask = None
+        # Discriminator star-profile placement overlay (from segmentation).
+        self._disc_star_mask = None
         # Last segmentation masks so overlays can be recomposed on toggle.
         self._seg_masks: dict | None = None
 
@@ -109,24 +153,62 @@ class MainWindow(QMainWindow):
         self._all_check.setToolTip("Show/hide all overlays at once.")
         self._all_check.toggled.connect(self._on_all_overlays_toggled)
         legend.addWidget(self._all_check)
+        # Single source of truth for legend key → (swatch color, label). Reused
+        # by the on-screen toggles and by Export Legend.
+        self._legend_entries = (
+            ("metal",         "#ff0000", "Metal"),
+            ("dark",          "#ff00ff", "Dark artifact"),
+            ("bright",        "#ffff00", "Bright artifact"),
+            ("bone",          "#0033cc", "Bone"),
+            ("bright_bone",   "#ff8000", "Bright→bone"),
+            ("bright_tissue", "#00ff00", "Bright→tissue"),
+            ("dark_bone",     "#8a2be2", "Dark→bone"),
+            ("dark_tissue",   "#00ced1", "Dark→tissue"),
+            ("roi",           "#32ff32", "ROI"),
+            ("star",          "#00ffff", "Metal stars"),
+            ("disc_star",     "#ffffff", "Disc stars"),
+        )
+        # Diagnostic overlays excluded from an exported poster legend.
+        self._legend_export_exclude = frozenset({"roi", "star", "disc_star"})
         self._overlay_checks: dict[str, QCheckBox] = {}
-        for key, color, name in (
-            ("metal",  "#ff0000", "Metal"),
-            ("dark",   "#ff00ff", "Dark artifact"),
-            ("bright", "#ffff00", "Bright artifact"),
-            ("bone",   "#0033cc", "Bone"),
-            ("roi",    "#32ff32", "ROI"),
-            ("star",   "#00ffff", "Star profiles"),
-        ):
+        for key, color, name in self._legend_entries:
             check = QCheckBox(name)
             swatch = QPixmap(12, 12)
             swatch.fill(QColor(color))
             check.setIcon(QIcon(swatch))
-            # ROI outline and star-profile placement are diagnostic — opt-in.
-            check.setChecked(key not in ("roi", "star"))
+            # Contextual splits, ROI outline, and star placements are
+            # diagnostic — opt-in.
+            check.setChecked(key not in (
+                "bright_bone", "bright_tissue", "dark_bone", "dark_tissue",
+                "roi", "star", "disc_star"))
             check.toggled.connect(self._refresh_overlays)
             self._overlay_checks[key] = check
             legend.addWidget(check)
+        # Viewing a split overlay triggers its lazy classification when the
+        # segmentation didn't already provide it (dark always; bright when the
+        # legacy method was used).
+        for _k in ("bright_bone", "bright_tissue", "dark_bone", "dark_tissue"):
+            self._overlay_checks[_k].toggled.connect(self._ensure_context_splits)
+        _ctx_tip = (
+            "Contextual split of the {kind} artifact mask: what tissue the\n"
+            "artifact is corrupting underneath (decides the HU it should be\n"
+            "restored to). Subset of '{parent}'; computed on first view when\n"
+            "the segmentation didn't already provide it.")
+        self._overlay_checks["bright_bone"].setToolTip(
+            _ctx_tip.format(kind="bright", parent="Bright artifact"))
+        self._overlay_checks["bright_tissue"].setToolTip(
+            _ctx_tip.format(kind="bright", parent="Bright artifact"))
+        self._overlay_checks["dark_bone"].setToolTip(
+            _ctx_tip.format(kind="dark", parent="Dark artifact"))
+        self._overlay_checks["dark_tissue"].setToolTip(
+            _ctx_tip.format(kind="dark", parent="Dark artifact"))
+        self._overlay_checks["star"].setToolTip(
+            "Metal-detection stars: the FW% rays shot from each metal blob to\n"
+            "set that slice's metal threshold. Appears after Detect Metal.")
+        self._overlay_checks["disc_star"].setToolTip(
+            "Discriminator stars: the radial profiles shot from each implant's\n"
+            "centroid to judge bone vs. bright artifact. Appears after Segment\n"
+            "Artifacts (Star Profile method).")
         legend.addStretch(1)
 
         layout = QVBoxLayout()
@@ -170,10 +252,21 @@ class MainWindow(QMainWindow):
         self._export_btn.setEnabled(False)  # enabled once a volume is loaded
         self._export_btn.setToolTip(
             "Save the current slice (with visible overlays) as a lossless\n"
-            "PNG/TIFF at 4x resolution for posters and figures."
+            "PNG/TIFF at 4x resolution for posters and figures.\n"
+            "The black air border is cropped off automatically."
         )
         self._export_btn.clicked.connect(self._on_export_clicked)
         toolbar.addWidget(self._export_btn)
+
+        self._export_legend_btn = QPushButton("Export Legend…")
+        self._export_legend_btn.setToolTip(
+            "Save a standalone color-key PNG for poster figures. Includes the\n"
+            "tissue/artifact classes currently toggled on, so the key matches\n"
+            "your exported slice; ROI, metal stars, and disc stars are never\n"
+            "included. Toggle the classes you want, then export."
+        )
+        self._export_legend_btn.clicked.connect(self._on_export_legend_clicked)
+        toolbar.addWidget(self._export_legend_btn)
 
         # Hide the CT couch: renders everything outside the body mask as air.
         # Applies to the live view AND exports (export saves the rendered view).
@@ -215,13 +308,30 @@ class MainWindow(QMainWindow):
         self._wl_combo.currentIndexChanged.connect(self._on_wl_preset_changed)
         toolbar.addWidget(self._wl_combo)
 
-        # --- second toolbar: star-profile discrimination tuning ------------
-        # All of these apply on the next "Segment Artifacts" run (Star Profile
-        # method). They do not require re-detecting metal.
+        # --- second toolbar: segmentation/discrimination tuning ------------
+        # All of these apply on the next "Segment Artifacts" run; none require
+        # re-detecting metal. Dark HU applies to both methods; the bright/bone
+        # ranges and weights only affect the Star Profile method.
         self.addToolBarBreak()
         disc_bar = self.addToolBar("Discrimination")
 
-        disc_bar.addWidget(QLabel("Bright HU (gate):"))
+        disc_bar.addWidget(QLabel("Dark HU:"))
+        # Floor set well below the usual -1024 air line: reconstruction padding
+        # and severe dark streaks can read down to ~-3000 HU in this data.
+        self._dark_low_spin = self._make_hu_spin(
+            -4000, 500, -1024,
+            "Lower bound of the dark artifact range (plain threshold, applies\n"
+            "to both segmentation methods). Can go below -1024 to reach\n"
+            "reconstruction padding / very dark streaks (down to ~-3000 HU).")
+        self._dark_high_spin = self._make_hu_spin(
+            -4000, 500, -150,
+            "Upper bound of the dark artifact range. Raising it toward 0 grabs\n"
+            "more of the gray streak shadows (and eventually fat, ~-100 HU).")
+        disc_bar.addWidget(self._dark_low_spin)
+        disc_bar.addWidget(QLabel("–"))
+        disc_bar.addWidget(self._dark_high_spin)
+
+        disc_bar.addWidget(QLabel("   Bright HU (gate):"))
         self._bright_low_spin = self._make_hu_spin(
             -1024, 5000, 200,
             "Lower bound of the bright candidate pool. Pixels outside the\n"
@@ -246,22 +356,75 @@ class MainWindow(QMainWindow):
         disc_bar.addWidget(self._bone_high_spin)
 
         # Weights: each feature votes ±weight toward bone; bone_score>0 => bone.
-        disc_bar.addWidget(QLabel("   Weights  HU:"))
+        weights_label = QLabel("   Vote weights →  HU:")
+        weights_label.setToolTip(
+            "How loudly each of the 4 clues votes for 'bone'. A pixel's votes are\n"
+            "summed; if the total is positive it's called bone, else bright artifact.\n"
+            "Bigger weight = that clue matters more. Set to 0 to ignore a clue.")
+        disc_bar.addWidget(weights_label)
         self._w_hu_spin = self._make_weight_spin(
-            0.45, "Weight of the HU-band vote (default 0.45, the largest).")
+            0.45, "HU: is the pixel's brightness inside the bone HU band above?\n"
+                  "Default 0.45 — the loudest vote.")
         disc_bar.addWidget(self._w_hu_spin)
         disc_bar.addWidget(QLabel("width:"))
         self._w_width_spin = self._make_weight_spin(
-            0.35, "Weight of the peak-width vote (broad = bone).")
+            0.35, "width: is the intensity peak broad (bone, 3-5mm) or\n"
+                  "narrow (streak artifact, <2mm)? Default 0.35.")
         disc_bar.addWidget(self._w_width_spin)
         disc_bar.addWidget(QLabel("smooth:"))
         self._w_smooth_spin = self._make_weight_spin(
-            0.25, "Weight of the smoothness vote (smooth = bone).")
+            0.25, "smooth: does brightness change gradually (bone) or\n"
+                  "with a sharp edge (artifact)? Default 0.25.")
         disc_bar.addWidget(self._w_smooth_spin)
         disc_bar.addWidget(QLabel("grad:"))
         self._w_gradient_spin = self._make_weight_spin(
-            0.25, "Weight of the gradient vote (gentle slope = bone).")
+            0.25, "grad (gradient): is the slope from the pixel into surrounding\n"
+                  "tissue gentle (bone) or steep (artifact)? Default 0.25.")
         disc_bar.addWidget(self._w_gradient_spin)
+
+        # Context bands: what surrounding HU counts as bone vs. soft tissue when
+        # deciding what an artifact is corrupting (over-bone / over-tissue split,
+        # "Decision 2"). Separate from the bone vote band above; drives both the
+        # bright and dark contextual splits.
+        disc_bar.addWidget(QLabel("   Context bone HU:"))
+        self._ctx_bone_low_spin = self._make_hu_spin(
+            -1024, 5000, 500,
+            "Neighbors in this HU band count as 'bone' when judging what an\n"
+            "artifact overlies. Used by both the bright and dark over-bone/\n"
+            "over-tissue splits (not the bone-vs-artifact vote).")
+        self._ctx_bone_high_spin = self._make_hu_spin(
+            -1024, 5000, 1500, "Upper bound of the context bone band.")
+        disc_bar.addWidget(self._ctx_bone_low_spin)
+        disc_bar.addWidget(QLabel("–"))
+        disc_bar.addWidget(self._ctx_bone_high_spin)
+
+        disc_bar.addWidget(QLabel("   Context tissue HU:"))
+        self._ctx_tissue_low_spin = self._make_hu_spin(
+            -1024, 5000, -100,
+            "Neighbors in this HU band count as 'soft tissue' when judging what\n"
+            "an artifact overlies.")
+        self._ctx_tissue_high_spin = self._make_hu_spin(
+            -1024, 5000, 300, "Upper bound of the context soft-tissue band.")
+        disc_bar.addWidget(self._ctx_tissue_low_spin)
+        disc_bar.addWidget(QLabel("–"))
+        disc_bar.addWidget(self._ctx_tissue_high_spin)
+
+        # Context window: in-plane neighborhood size (px) for the over-bone/
+        # over-tissue vote. Larger lets a boundary artifact pixel "see" bone a
+        # few mm away and be pulled toward bone.
+        disc_bar.addWidget(QLabel("   Context window:"))
+        self._ctx_window_spin = QSpinBox()
+        self._ctx_window_spin.setRange(3, 25)
+        self._ctx_window_spin.setValue(5)
+        self._ctx_window_spin.setSingleStep(2)
+        self._ctx_window_spin.setSuffix(" px")
+        self._ctx_window_spin.setMinimumWidth(72)
+        self._ctx_window_spin.setToolTip(
+            "In-plane size of the neighborhood the over-bone/over-tissue vote\n"
+            "looks at (odd values; default 5). Bigger = an artifact pixel counts\n"
+            "bone/tissue farther away, so pixels bordering bone lean bone. Drives\n"
+            "both the bright and dark splits; z is fixed at ±1 slice.")
+        disc_bar.addWidget(self._ctx_window_spin)
 
         self._reset_tuning_btn = QPushButton("Reset")
         self._reset_tuning_btn.setToolTip("Restore all discrimination values to defaults.")
@@ -306,6 +469,7 @@ class MainWindow(QMainWindow):
         self._roi_mask = None
         self._roi_outline = None
         self._star_mask = None
+        self._disc_star_mask = None
         self._seg_masks = None
         self._body_mask = None  # stale for the new patient
         self._hide_bed_check.blockSignals(True)
@@ -364,6 +528,7 @@ class MainWindow(QMainWindow):
         self._roi_mask = result.get("roi_mask")
         self._roi_outline = self._compute_roi_outline(self._roi_mask)
         self._star_mask = result.get("star_mask")
+        self._disc_star_mask = None  # stale until segmentation reruns
         self._seg_masks = None  # previous segmentation no longer matches
         voxels = int(self._metal_mask.sum())
         # Per-slice thresholds (keyed by slice index); keys may be numpy ints.
@@ -399,7 +564,7 @@ class MainWindow(QMainWindow):
         spin.setSingleStep(50)
         spin.setSuffix(" HU")
         spin.setToolTip(tooltip)
-        spin.setMaximumWidth(90)
+        spin.setMinimumWidth(96)
         return spin
 
     @staticmethod
@@ -410,15 +575,19 @@ class MainWindow(QMainWindow):
         spin.setSingleStep(0.05)
         spin.setDecimals(2)
         spin.setToolTip(tooltip)
-        spin.setMaximumWidth(64)
+        spin.setMinimumWidth(72)
         return spin
 
     def _on_reset_tuning(self):
         for spin, default in (
+            (self._dark_low_spin, -1024), (self._dark_high_spin, -150),
             (self._bright_low_spin, 200), (self._bright_high_spin, 2500),
             (self._bone_low_spin, 400), (self._bone_high_spin, 1800),
             (self._w_hu_spin, 0.45), (self._w_width_spin, 0.35),
             (self._w_smooth_spin, 0.25), (self._w_gradient_spin, 0.25),
+            (self._ctx_bone_low_spin, 500), (self._ctx_bone_high_spin, 1500),
+            (self._ctx_tissue_low_spin, -100), (self._ctx_tissue_high_spin, 300),
+            (self._ctx_window_spin, 5),
         ):
             spin.setValue(default)
 
@@ -429,17 +598,29 @@ class MainWindow(QMainWindow):
         method = self._seg_method_combo.currentData()
         self._segment_btn.setEnabled(False)
 
+        # Capture the context bands now so the lazily-computed splits match
+        # this segmentation even if the spin boxes change afterward.
+        self._seg_ctx_bands = (
+            self._ctx_bone_low_spin.value(), self._ctx_bone_high_spin.value(),
+            self._ctx_tissue_low_spin.value(), self._ctx_tissue_high_spin.value(),
+            self._ctx_window_spin.value(),
+        )
+
         self._segment_thread = QThread(self)
         if method == "legacy":
             self.statusBar().showMessage("Segmenting artifacts (legacy HU thresholds)…")
             self._segment_worker = LegacySegmentationWorker(
-                self._volume, self._metal_mask, roi_mask=self._roi_mask
+                self._volume, self._metal_mask, roi_mask=self._roi_mask,
+                dark_low=self._dark_low_spin.value(),
+                dark_high=self._dark_high_spin.value(),
             )
         else:
             self.statusBar().showMessage("Segmenting artifacts (star profile)…")
             self._segment_worker = SegmentationWorker(
                 self._volume, self._spacing, self._metal_mask,
                 roi_mask=self._roi_mask,
+                dark_low=self._dark_low_spin.value(),
+                dark_high=self._dark_high_spin.value(),
                 bright_low=self._bright_low_spin.value(),
                 bright_high=self._bright_high_spin.value(),
                 bone_low=self._bone_low_spin.value(),
@@ -448,6 +629,11 @@ class MainWindow(QMainWindow):
                 w_width=self._w_width_spin.value(),
                 w_smooth=self._w_smooth_spin.value(),
                 w_gradient=self._w_gradient_spin.value(),
+                ctx_bone_low=self._ctx_bone_low_spin.value(),
+                ctx_bone_high=self._ctx_bone_high_spin.value(),
+                ctx_tissue_low=self._ctx_tissue_low_spin.value(),
+                ctx_tissue_high=self._ctx_tissue_high_spin.value(),
+                ctx_window=self._ctx_window_spin.value(),
             )
         self._segment_worker.moveToThread(self._segment_thread)
         self._segment_thread.started.connect(self._segment_worker.run)
@@ -462,12 +648,96 @@ class MainWindow(QMainWindow):
         dark = result["dark_artifacts"]
         bright = result["bright_artifacts"]
         bone = result["bone"]
-        self._seg_masks = {"dark": dark, "bright": bright, "bone": bone}
+        self._seg_masks = {
+            "dark": dark, "bright": bright, "bone": bone,
+            # Contextual over-bone/over-tissue splits. The star-profile worker
+            # provides the bright split eagerly; anything left None here is
+            # computed lazily (ContextSplitWorker) when its overlay is viewed.
+            "bright_bone":   result.get("bright_artifact_bone"),
+            "bright_tissue": result.get("bright_artifact_tissue"),
+            "dark_bone":     result.get("dark_artifact_bone"),
+            "dark_tissue":   result.get("dark_artifact_tissue"),
+        }
+        # Only the star-profile worker returns this; legacy leaves it None.
+        self._disc_star_mask = result.get("disc_star_mask")
         self._refresh_overlays()
         self.statusBar().showMessage(
             f"Segmentation done — dark: {int(dark.sum()):,}  "
             f"bright artifact: {int(bright.sum()):,}  bone: {int(bone.sum()):,}"
         )
+        # If a split overlay is already on, compute what it needs now.
+        self._ensure_context_splits()
+
+    # ---- lazy over-bone/over-tissue splits ---------------------------------
+    def _ensure_context_splits(self, *args) -> None:
+        """Compute any over-bone/over-tissue split that is viewed but missing.
+
+        Triggered when a split overlay is toggled on (or a segmentation
+        finishes with one already on). Each kind is a no-op unless it's
+        actually needed and not already computed or in flight.
+        """
+        for kind in ("bright", "dark"):
+            self._ensure_context_split(kind)
+
+    def _ensure_context_split(self, kind: str) -> None:
+        want = (self._overlay_checks[f"{kind}_bone"].isChecked()
+                or self._overlay_checks[f"{kind}_tissue"].isChecked())
+        if not want:
+            return
+        if self._seg_masks is None or self._seg_masks.get(kind) is None:
+            return
+        if self._seg_masks.get(f"{kind}_bone") is not None:
+            return  # already computed for this segmentation
+        if kind in self._ctx_threads:
+            return  # a computation is already in flight
+
+        bands = self._seg_ctx_bands or ()
+        # Remember which parent mask this run is for, so a result arriving
+        # after a re-segmentation is discarded instead of painted onto the
+        # new masks.
+        self._ctx_for[kind] = self._seg_masks[kind]
+        self.statusBar().showMessage(
+            f"Classifying {kind} artifacts (over bone/tissue)…")
+        thread = QThread(self)
+        worker = ContextSplitWorker(
+            self._volume, self._seg_masks[kind], self._metal_mask,
+            self._spacing, kind, *bands,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # Bound methods only: a lambda here would run in the WORKER thread
+        # (no receiver QObject to queue onto) and repaint the GUI from it —
+        # black viewport + "QBasicTimer" warnings. The worker emits its kind
+        # precisely so these can stay plain bound methods.
+        worker.finished.connect(self._on_context_split_finished)
+        worker.failed.connect(self._on_context_split_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        self._ctx_threads[kind] = thread
+        self._ctx_workers[kind] = worker
+        thread.start()
+
+    def _on_context_split_finished(self, kind: str, result) -> None:
+        self._ctx_threads.pop(kind, None)
+        self._ctx_workers.pop(kind, None)
+        # Only apply if the masks are still the ones we computed against; a
+        # re-segmentation while we were running replaces them.
+        if self._seg_masks is not None and \
+                self._seg_masks.get(kind) is self._ctx_for.get(kind):
+            self._seg_masks[f"{kind}_bone"] = result[f"{kind}_artifact_bone"]
+            self._seg_masks[f"{kind}_tissue"] = result[f"{kind}_artifact_tissue"]
+            self._refresh_overlays()
+            self.statusBar().showMessage(f"{kind.capitalize()} artifact split ready.")
+        self._ctx_for.pop(kind, None)
+        # A segmentation may have superseded this run; recompute if still wanted.
+        self._ensure_context_split(kind)
+
+    def _on_context_split_failed(self, kind: str, message) -> None:
+        self._ctx_threads.pop(kind, None)
+        self._ctx_workers.pop(kind, None)
+        self._ctx_for.pop(kind, None)
+        self.statusBar().showMessage(
+            f"{kind.capitalize()} split: {message.splitlines()[0]}")
 
     # ---- hide bed ----------------------------------------------------------
     def _on_hide_bed_toggled(self, checked: bool) -> None:
@@ -521,6 +791,8 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        # Trim the black air surround so figures don't need manual cropping.
+        image = _autocrop_to_content(image)
         # 4x nearest-neighbour upscale: lossless, keeps mask edges razor sharp
         # at poster print sizes (512 px native is too soft at 300 DPI).
         scaled = image.scaled(
@@ -532,6 +804,66 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Exported {scaled.width()}x{scaled.height()} image to {path}"
             )
+        else:
+            self.statusBar().showMessage(f"Export failed: could not write {path}")
+
+    def _on_export_legend_clicked(self):
+        """Save a standalone color-key PNG of the tissue/artifact classes.
+
+        Excludes the diagnostic overlays (ROI, metal stars, disc stars). Only
+        the classes currently toggled on are included, so the exported key
+        matches the figure you exported from Export Slice.
+        """
+        entries = [
+            (color, name) for key, color, name in self._legend_entries
+            if key not in self._legend_export_exclude
+            and self._overlay_checks[key].isChecked()
+        ]
+        if not entries:
+            self.statusBar().showMessage(
+                "Export legend: no class overlays are toggled on.")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export legend", "legend.png", "PNG image (*.png)")
+        if not path:
+            return
+
+        # Render at 4x for crisp poster print, matching Export Slice.
+        scale = 4
+        pad, sw, gap, row_h = 12 * scale, 20 * scale, 10 * scale, 28 * scale
+        font = QFont()
+        font.setPointSize(11 * scale)
+        # Measure the widest label so the canvas fits the text.
+        probe = QPixmap(1, 1)
+        p = QPainter(probe)
+        p.setFont(font)
+        text_w = max(p.fontMetrics().horizontalAdvance(name) for _, name in entries)
+        p.end()
+
+        width = pad + sw + gap + text_w + pad
+        height = pad * 2 + row_h * len(entries)
+        canvas = QPixmap(width, height)
+        canvas.fill(QColor("white"))
+
+        painter = QPainter(canvas)
+        painter.setFont(font)
+        border = QColor("#555555")
+        text_color = QColor("black")
+        for i, (color, name) in enumerate(entries):
+            y = pad + i * row_h
+            painter.setPen(border)
+            painter.setBrush(QColor(color))
+            painter.drawRect(pad, y + (row_h - sw) // 2, sw, sw)
+            painter.setPen(text_color)
+            painter.drawText(pad + sw + gap, y, text_w, row_h,
+                             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                             name)
+        painter.end()
+
+        if canvas.save(path):
+            self.statusBar().showMessage(
+                f"Exported legend ({len(entries)} classes) to {path}")
         else:
             self.statusBar().showMessage(f"Export failed: could not write {path}")
 
@@ -554,6 +886,9 @@ class MainWindow(QMainWindow):
             check.setChecked(checked)
             check.blockSignals(False)
         self._refresh_overlays()
+        # blockSignals suppressed the split toggles' lazy-compute hook; run it
+        # once here so "All" can still trigger a missing split.
+        self._ensure_context_splits()
 
     def _refresh_overlays(self) -> None:
         """Recompose viewer overlays from current masks + legend toggles."""
@@ -568,11 +903,24 @@ class MainWindow(QMainWindow):
                 overlays.append((self._seg_masks["bright"], (255, 255,   0), 0.6))  # yellow
             if show["bone"]:
                 overlays.append((self._seg_masks["bone"],   (  0,  51, 204), 0.5))  # blue
+            # Contextual splits sit on top of their parent masks so they stay
+            # visible when both are toggled on.
+            for key, color in (
+                ("bright_bone",   (255, 128,   0)),   # orange
+                ("bright_tissue", (  0, 255,   0)),   # green
+                ("dark_bone",     (138,  43, 226)),   # blue-violet
+                ("dark_tissue",   (  0, 206, 209)),   # teal
+            ):
+                mask = self._seg_masks.get(key)
+                if mask is not None and show[key]:
+                    overlays.append((mask, color, 0.75))
         if self._roi_outline is not None and show["roi"]:
             overlays.append((self._roi_outline, (50, 255, 50), 0.9))  # lime
         # Last so the thin lines stay visible on top of the other masks.
         if self._star_mask is not None and show["star"]:
             overlays.append((self._star_mask, (0, 255, 255), 0.9))    # cyan
+        if self._disc_star_mask is not None and show["disc_star"]:
+            overlays.append((self._disc_star_mask, (255, 255, 255), 0.9))  # white
         self._view.set_overlays(overlays)
 
     def _on_segment_failed(self, message):
