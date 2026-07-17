@@ -157,7 +157,7 @@ candidate pixel is then judged using the **star of its nearest implant** — so
 angle and distance are always measured from the implant the pixel actually
 belongs to, not from a midline average between two hips.
 
-### 3b. Four-feature scoring (a weighted panel of judges)
+### 3b. Four-feature scoring (weighted vote)
 For each bright pixel, we look at its matching ray's profile at that pixel's
 distance and compute four features, each casting a weighted vote toward "bone"
 (`_analyze_profile_characteristics`, `discrimination.py:737-784`):
@@ -167,7 +167,7 @@ distance and compute four features, each casting a weighted vote toward "bone"
 | **HU** | Is the pixel's brightness inside the bone HU band? | inside band [400,1800], near its center | far outside the band | **±0.45** |
 | **width** | Is the intensity peak broad or a thin streak? | broad, 3–5 mm | narrow, < 2 mm | ±0.35 |
 | **smooth** | Does brightness fade gradually or stop at a sharp edge? | smooth transition (>0.7) | sharp edge (<0.3) | ±0.25 |
-| **grad** | Is the slope into surrounding tissue gentle or a cliff? | gentle slope (<50 HU) | steep cliff (>150 HU) | ±0.25 |
+| **grad** | Is the slope into surrounding tissue gentle or a cliff? | gentle slope (<50 HU/mm) | steep cliff (>150 HU/mm) | ±0.25 |
 
 Each feature casts a **vote**: positive (looks like bone) or negative (looks like
 artifact), scaled by its **weight** — how loudly that clue counts. A weight of 0
@@ -177,14 +177,16 @@ exactly the four weight boxes on the PySide "Discrimination" toolbar.
 #### How each feature is actually measured
 
 All three *shape* features are read off the same 1-D **HU profile** — the string
-of HU values sampled pixel-by-pixel along the pixel's matching ray
-(`_get_star_profiles_detailed`). That raw profile is first **Gaussian-smoothed**
-(σ = 2) to suppress noise, and its **gradient** (point-to-point change,
-`np.gradient`) is computed. To judge one pixel, the code jumps to the profile
-sample nearest that pixel's distance from the star centre and takes a small
-**local window** of ±5 samples (~11 points) of the smoothed HU and its gradient
-(`_analyze_profile_characteristics`, `discrimination.py:737-744`). The three
-shape features are then computed on that window:
+of HU values sampled along the pixel's matching ray (`_get_star_profiles_detailed`),
+one sample per pixel step, so samples sit **~1 mm apart** (0.98 mm in-plane on the
+HIP data). That raw profile is first **Gaussian-smoothed** (σ = 2 samples, ~2 mm)
+to suppress noise, and its **gradient** (point-to-point change, `np.gradient`) is
+computed. To judge one pixel, the code jumps to the profile sample nearest that
+pixel's distance from the star centre and takes a small **local window** of ±5
+samples (~11 points, **≈ 10 mm** of profile centred on the pixel) of the smoothed
+HU and its gradient (`_analyze_profile_characteristics`,
+`discrimination.py:737-744`). All three shape features — width, smoothness, and
+gradient — are computed on that same 10 mm window:
 
 - **Peak width** (`_calculate_peak_width`, mm) — Full-Width-at-Half-Maximum: find
   the max HU in the window, count how many samples sit above **half** of that
@@ -195,11 +197,13 @@ shape features are then computed on that window:
   gradient** across the window, then `smoothness = 1 / (1 + variance/100)`. If HU
   changes steadily (small gradient variance) the score is near 1 (smooth = bone);
   if the gradient jumps around, it drops toward 0 (rough edge = artifact). Votes
-  **+** if > 0.7, **−** if < 0.3.
-- **Gradient magnitude** (HU/pixel) — the absolute value of the **mean gradient**
-  across the window: how steep the HU slope is right at the pixel. Small = gentle
-  ramp (bone); large = steep wall (artifact edge). Votes **+** if < 50, **−** if
-  > 150.
+  **+** if > 0.7, **−** if < 0.3 — which corresponds to gradient variance below
+  **~43** (bone) and above **~233** (artifact). The 0–1 score is the quantity the
+  code actually compares; the variance figures are just those cutoffs inverted.
+- **Gradient magnitude** (HU per mm) — the absolute value of the **mean gradient**
+  across the window: how steep the HU slope is right at the pixel. Since samples
+  are ~1 mm apart, `np.gradient` is already ~HU/mm. Small = gentle ramp (bone);
+  large = steep wall (artifact edge). Votes **+** if < 50, **−** if > 150.
 
 The **HU** feature needs no profile — it just compares the pixel's own HU to the
 bone band, scoring most positive at the band's centre and turning negative once
@@ -266,7 +270,7 @@ worker always passes the toolbar values.
 
 Each split partitions its parent mask exactly (every parent voxel lands in
 bone *or* tissue, never both). Both are surfaced in the PySide app as opt-in
-overlays (orange/green for bright, blue-violet/teal for dark) and work with
+overlays (orange/pink for bright, blue-violet/teal for dark) and work with
 both segmentation methods; the star-profile worker returns the bright split
 eagerly, everything else is computed lazily on first view. This is a
 refinement, not part of the core bone/artifact call.
@@ -297,7 +301,7 @@ refinement, not part of the core bone/artifact call.
   vote counts over (default 5, i.e. 5×5 in-plane, ±1 slice). Bigger = an
   artifact pixel tallies bone/tissue farther away, so a pixel bordering bone
   leans bone even if its immediate neighbors are tissue — the lever when a
-  green region sits *next to* bone rather than *over* bone-HU. Drives both
+  pink region sits *next to* bone rather than *over* bone-HU. Drives both
   splits; too large and the vote blurs across tissue boundaries.
 - **Feature weights (`w_hu / w_width / w_smooth / w_gradient`):** how loudly each
   of the four votes counts. Raising `w_hu` makes the classifier trust HU more
@@ -313,7 +317,7 @@ refinement, not part of the core bone/artifact call.
 Two different "this should be bone" complaints have two different fixes — read
 the overlay color to tell which:
 
-- **A green pixel (bright→tissue) that should be over bone.** This is a
+- **A pink pixel (bright→tissue) that should be over bone.** This is a
   **Decision 2** error. Lower the **Context bone HU** floor (e.g. 500 → ~350–400)
   and re-Segment. Peri-implant bone, blurred by beam hardening and partial
   volume, often reads below 500 HU and falls into the 300–500 "dead zone" that
@@ -321,12 +325,12 @@ the overlay color to tell which:
   tissue. Lowering the floor lets that bone register as bone *neighbors*.
   Because the label is a **local majority vote of the neighborhood**, not a test
   of the pixel itself, this flips only the regions genuinely surrounded by bone
-  (e.g. one side of an implant) and leaves artifact-over-muscle green. Nudge in
-  small steps: if green that really is over muscle starts flipping, the floor
+  (e.g. one side of an implant) and leaves artifact-over-muscle pink. Nudge in
+  small steps: if pink that really is over muscle starts flipping, the floor
   has dropped into soft-tissue HU and gone too far. Optionally also lower the
   **Context tissue HU** ceiling (300 → ~150) so mid-density pixels stop counting
   as tissue votes.
-- **A yellow/green pixel that should be real *bone*, not an artifact at all.**
+- **A yellow/pink pixel that should be real *bone*, not an artifact at all.**
   This is a **Decision 1** error (the bone-vs-artifact call itself). Widen the
   **Bone HU** vote band or raise `w_hu`, or lower the shape weights so geometry
   overrides HU less. This moves pixels from the artifact masks into the blue
@@ -334,7 +338,7 @@ the overlay color to tell which:
 
 Not tunable: an artifact pixel within 1.5 cm of metal whose neighborhood vote is
 an exact bone/tissue tie is hardcoded to fall to tissue. It rarely matters, but
-right at the implant edge it can hold a thin rim green.
+right at the implant edge it can hold a thin rim pink.
 
 ---
 
@@ -347,7 +351,7 @@ right at the implant edge it can hold a thin rim green.
 | Yellow | Bright artifact | Bright streak artifact (Stage 3 verdict) |
 | Blue | Bone | Real bone (Stage 3 verdict) |
 | Orange | Bright→bone | Bright artifact corrupting bone underneath (Stage 4) |
-| Green | Bright→tissue | Bright artifact corrupting soft tissue underneath (Stage 4) |
+| Hot pink | Bright→tissue | Bright artifact corrupting soft tissue underneath (Stage 4) |
 | Blue-violet | Dark→bone | Dark artifact corrupting bone underneath (Stage 4) |
 | Teal | Dark→tissue | Dark artifact corrupting soft tissue underneath (Stage 4) |
 | Lime | ROI | Per-implant ROI box outline (Stage 1d) |

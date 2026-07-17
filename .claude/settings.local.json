@@ -37,7 +37,9 @@
       "Bash(git -C /c/GitHub/Density_Override_DD status --short)",
       "Bash(git -C /c/GitHub/Density_Override_DD log --oneline -5)",
       "Bash(git -C /c/GitHub/Density_Override_DD log --oneline main..feature/pyside-app)",
-      "Bash(git -C /c/GitHub/Density_Override_DD diff --stat main...feature/pyside-app)"
+      "Bash(git -C /c/GitHub/Density_Override_DD diff --stat main...feature/pyside-app)",
+      "PowerShell(python tools\\\\visualize_discriminator.py --help)",
+      "PowerShell(python tools\\\\visualize_discriminator.py \"data\\\\HIP1 Patient\" --slice 90 --angles 16 --bone-low 400 --bone-high 1800 --bright-low 200 --bright-high 2500 --out output\\\\disc_profile_HIP1_slice90.png)"
     ],
     "deny": [],
     "ask": []

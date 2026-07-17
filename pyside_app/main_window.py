@@ -161,7 +161,7 @@ class MainWindow(QMainWindow):
             ("bright",        "#ffff00", "Bright artifact"),
             ("bone",          "#0033cc", "Bone"),
             ("bright_bone",   "#ff8000", "Bright→bone"),
-            ("bright_tissue", "#00ff00", "Bright→tissue"),
+            ("bright_tissue", "#ff69b4", "Bright→tissue"),
             ("dark_bone",     "#8a2be2", "Dark→bone"),
             ("dark_tissue",   "#00ced1", "Dark→tissue"),
             ("roi",           "#32ff32", "ROI"),
@@ -907,7 +907,7 @@ class MainWindow(QMainWindow):
             # visible when both are toggled on.
             for key, color in (
                 ("bright_bone",   (255, 128,   0)),   # orange
-                ("bright_tissue", (  0, 255,   0)),   # green
+                ("bright_tissue", (255, 105, 180)),   # hot pink
                 ("dark_bone",     (138,  43, 226)),   # blue-violet
                 ("dark_tissue",   (  0, 206, 209)),   # teal
             ):
