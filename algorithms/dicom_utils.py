@@ -38,12 +38,19 @@ def resolve_ct_dir(root: str) -> str | None:
     return best_dir
 
 
-def load_dicom_series_to_hu(dicom_dir):
+def load_dicom_series_to_hu(dicom_dir, series_instance_uid=None):
     """
     Load a DICOM series from a directory and convert to Hounsfield Units.
 
+    Only one series is loaded: the one matching ``series_instance_uid`` if
+    given, otherwise the CT series with the most slices. Other CT series in
+    the folder (a second reconstruction kernel, a scout) are ignored rather
+    than merged in, and slices repeating an already-seen position are dropped.
+
     Args:
         dicom_dir: Path to directory containing DICOM files
+        series_instance_uid: Load this series specifically (e.g. the one an
+            RTSTRUCT references). Returns (None, None) if it isn't there.
 
     Returns:
         tuple: (3D numpy array of HU values indexed [slice, row, col],
@@ -62,6 +69,8 @@ def load_dicom_series_to_hu(dicom_dir):
             from an RTSTRUCT.
         patient_study: dict of patient/study attributes to copy into
             derived objects (see _PATIENT_STUDY_KEYWORDS).
+        other_series_ignored: number of other CT series found in the folder.
+        duplicate_slices_dropped: slices skipped for repeating a position.
     """
     slices = []
     for s in os.listdir(dicom_dir):
@@ -78,7 +87,28 @@ def load_dicom_series_to_hu(dicom_dir):
         print(f"No valid CT DICOM images found in {dicom_dir}")
         return None, None
 
+    by_series = {}
+    for ds in slices:
+        by_series.setdefault(str(getattr(ds, 'SeriesInstanceUID', '')), []).append(ds)
+    if series_instance_uid is not None:
+        if series_instance_uid not in by_series:
+            print(f"Requested CT series not found in {dicom_dir}")
+            return None, None
+        chosen = series_instance_uid
+    else:
+        chosen = max(by_series, key=lambda uid: len(by_series[uid]))
+    other_series_ignored = len(by_series) - 1
+    slices = by_series[chosen]
+
     slices.sort(key=lambda s: float(s.ImagePositionPatient[2]))
+    unique, seen = [], set()
+    for ds in slices:
+        pos = tuple(round(float(v), 3) for v in ds.ImagePositionPatient)
+        if pos not in seen:
+            seen.add(pos)
+            unique.append(ds)
+    duplicate_slices_dropped = len(slices) - len(unique)
+    slices = unique
 
     pixel_spacing = slices[0].PixelSpacing
     slice_thickness = float(slices[0].SliceThickness)
@@ -121,4 +151,6 @@ def load_dicom_series_to_hu(dicom_dir):
             kw: first.data_element(kw).value
             for kw in _PATIENT_STUDY_KEYWORDS if kw in first
         },
+        'other_series_ignored': other_series_ignored,
+        'duplicate_slices_dropped': duplicate_slices_dropped,
     }

@@ -168,6 +168,63 @@ def test_rtstruct_references_ct():
             assert np.allclose(pts[:, 2], meta['image_position_patient'][z][2])
 
 
+def test_loader_picks_one_series_from_mixed_folder():
+    """Two CT series in one folder must not be merged."""
+    with tempfile.TemporaryDirectory() as tmp:
+        a_dir, b_dir, mixed = (os.path.join(tmp, d) for d in ('a', 'b', 'mixed'))
+        for d in (a_dir, b_dir, mixed):
+            os.makedirs(d)
+        _, series_a, _ = write_fake_ct(a_dir, ORIENTATIONS['HFS'])
+        _, series_b, _ = write_fake_ct(b_dir, ORIENTATIONS['HFS'])
+        for f in sorted(os.listdir(a_dir)):
+            os.rename(os.path.join(a_dir, f), os.path.join(mixed, 'A_' + f))
+        # Series B: same positions (e.g. a second kernel) but only 5 slices
+        for f in sorted(os.listdir(b_dir))[:5]:
+            os.rename(os.path.join(b_dir, f), os.path.join(mixed, 'B_' + f))
+
+        volume, meta = load_dicom_series_to_hu(mixed)
+        assert volume.shape == SHAPE
+        assert meta['series_instance_uid'] == series_a
+        assert meta['other_series_ignored'] == 1
+        assert meta['duplicate_slices_dropped'] == 0
+        assert CTGeometry.from_meta(meta, volume.shape).voxel_spacing_zyx()[0] == SLICE_SP
+
+        volume_b, meta_b = load_dicom_series_to_hu(mixed, series_b)
+        assert volume_b.shape == (5,) + SHAPE[1:]
+        assert meta_b['series_instance_uid'] == series_b
+        assert load_dicom_series_to_hu(mixed, '1.2.3.404') == (None, None)
+
+
+def test_long_contour_roundtrip():
+    """A contour with thousands of points (> 64 KB of ContourData) must survive."""
+    shape = (3, 512, 512)
+    z, r, c = np.indices(shape)
+    ang = np.arctan2(r - 256, c - 256)
+    # Star-shaped outline: very jagged, so the traced contour is long.
+    radius = 150 + 60 * np.sign(np.sin(ang * 90))
+    mask = (np.hypot(r - 256, c - 256) <= radius) & (z == 1)
+    meta = {
+        'image_position_patient': np.array([[0.0, 0.0, k * 2.0] for k in range(3)]),
+        'image_orientation_patient': np.array([1, 0, 0, 0, 1, 0], float),
+        'pixel_spacing_rc': (0.9, 0.9),
+        'sop_instance_uids': [generate_uid() for _ in range(3)],
+        'sop_class_uid': '1.2.840.10008.5.1.4.1.1.2',
+        'series_instance_uid': generate_uid(),
+        'frame_of_reference_uid': generate_uid(),
+        'patient_study': {},
+    }
+    ds, _ = create_rtstruct([('Jagged', mask, (1, 2, 3))], meta, shape)
+    longest = max(int(i.NumberOfContourPoints)
+                  for i in ds.ROIContourSequence[0].ContourSequence)
+    assert longest > 3000, longest
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'RS.dcm')
+        save_rtstruct(ds, path)
+        back = read_rtstruct(path)[0]
+    restored, off = rasterize_structure(back, CTGeometry.from_meta(meta, shape))
+    assert off == 0 and not (restored ^ mask).any()
+
+
 def test_metrics_on_known_shapes():
     spacing = (SLICE_SP, ROW_SP, COL_SP)
     a = np.zeros(SHAPE, bool)

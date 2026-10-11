@@ -12,11 +12,11 @@ responsive; the window owns the thread/worker references for their lifetime.
 import os
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
-    QMainWindow, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from pyside_app.slice_view import SliceView
@@ -94,6 +94,20 @@ class MainWindow(QMainWindow):
 
         self._rt_thread: QThread | None = None
         self._rt_worker: RtstructExportWorker | None = None
+
+        # Jobs currently running ("load", "detect", "segment", "bed",
+        # "rtstruct"). While any runs, actions that would replace the data it
+        # is working on are disabled (see _refresh_actions), so a result can
+        # never land on a different patient or detection than it was
+        # computed from.
+        self._busy: set[str] = set()
+        # What each in-flight job was started against (identity-checked when
+        # its result arrives, as a second line of defence).
+        self._detect_for = None
+        self._segment_for = None
+        self._bed_for = None
+        # Set when the user closes the window mid-job; we close once idle.
+        self._close_when_idle = False
 
         # Held so detection (a separate user action) can reuse them after load.
         self._volume = None
@@ -473,13 +487,66 @@ class MainWindow(QMainWindow):
         self._view.cursor_hu.connect(self._on_cursor_hu)
         self._slice_slider.valueChanged.connect(self._view.set_slice)
 
+    # ---- action state ------------------------------------------------------
+    def _refresh_actions(self) -> None:
+        """Enable each action only when its inputs exist and nothing is running.
+
+        Any running job blocks Load / Detect / Segment / Export RTSTRUCT, so
+        the data a job was started from can't be replaced underneath it.
+        """
+        idle = not self._busy
+        has_volume = self._volume is not None
+        has_metal = self._metal_mask is not None
+        self._load_btn.setEnabled(idle)
+        self._detect_btn.setEnabled(idle and has_volume)
+        self._segment_btn.setEnabled(idle and has_metal)
+        self._export_rt_btn.setEnabled(idle and has_metal)
+        self._hide_bed_check.setEnabled(
+            has_volume and not ({"load", "bed"} & self._busy))
+
+    def _running_threads(self) -> list:
+        threads = [self._thread, self._detect_thread, self._segment_thread,
+                   self._bed_thread, self._rt_thread, *self._ctx_threads.values()]
+        return [t for t in threads if t is not None and t.isRunning()]
+
+    def closeEvent(self, event) -> None:
+        """Don't let Qt destroy a running QThread (that aborts the process).
+
+        If work is in flight, offer to close automatically once it finishes.
+        """
+        if not self._running_threads():
+            event.accept()
+            return
+        event.ignore()
+        if self._close_when_idle:
+            return  # already waiting
+        jobs = ", ".join(sorted(self._busy)) or "background processing"
+        answer = QMessageBox.question(
+            self, "Task still running",
+            f"A task is still running ({jobs}).\n\n"
+            "Close automatically when it finishes?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._close_when_idle = True
+            self.statusBar().showMessage("Will close when the running task finishes…")
+            self._close_timer = QTimer(self)
+            self._close_timer.timeout.connect(self._close_if_idle)
+            self._close_timer.start(200)
+
+    def _close_if_idle(self) -> None:
+        if not self._running_threads():
+            self._close_timer.stop()
+            self.close()
+
     # ---- loading ---------------------------------------------------------
     def _on_load_clicked(self):
         directory = QFileDialog.getExistingDirectory(self, "Select patient folder")
         if not directory:
             return
 
-        self._load_btn.setEnabled(False)
+        self._busy.add("load")
+        self._refresh_actions()
         self.statusBar().showMessage(f"Loading {directory} …")
 
         self._thread = QThread(self)
@@ -497,7 +564,7 @@ class MainWindow(QMainWindow):
         self._volume = volume
         self._spacing = meta.get("spacing")
         self._meta = meta
-        self._export_rt_btn.setEnabled(False)  # nothing to export until detection
+        self._busy.discard("load")
         self._metal_mask = None
         self._roi_mask = None
         self._roi_outline = None
@@ -508,10 +575,8 @@ class MainWindow(QMainWindow):
         self._hide_bed_check.blockSignals(True)
         self._hide_bed_check.setChecked(False)
         self._hide_bed_check.blockSignals(False)
-        self._hide_bed_check.setEnabled(True)
         self._slice_thresholds = {}  # previous patient's thresholds no longer apply
         self._thr_label.setText("Metal thr: -")
-        self._segment_btn.setEnabled(False)
         self._view.set_volume(volume)
         # set_volume applied auto W/L; reflect that in the preset combo
         # (its window_changed just flipped the combo to Custom).
@@ -521,17 +586,24 @@ class MainWindow(QMainWindow):
         self._slice_slider.setEnabled(True)
         self._slice_slider.setMaximum(volume.shape[0] - 1)
         self._slice_slider.setValue(volume.shape[0] // 2)
-        self._load_btn.setEnabled(True)
-        self._detect_btn.setEnabled(True)
         self._export_btn.setEnabled(True)
+        self._refresh_actions()
         ct_dir = meta.get("ct_dir", "")
+        notes = []
+        if meta.get("other_series_ignored"):
+            notes.append(f"{meta['other_series_ignored']} other CT series in "
+                         f"folder ignored — loaded the largest")
+        if meta.get("duplicate_slices_dropped"):
+            notes.append(f"{meta['duplicate_slices_dropped']} duplicate slices dropped")
+        note = f"  [{'; '.join(notes)}]" if notes else ""
         self.statusBar().showMessage(
             f"Loaded {volume.shape[0]} slices "
-            f"({volume.shape[2]}x{volume.shape[1]}) from {ct_dir}"
+            f"({volume.shape[2]}x{volume.shape[1]}) from {ct_dir}{note}"
         )
 
     def _on_load_failed(self, message):
-        self._load_btn.setEnabled(True)
+        self._busy.discard("load")
+        self._refresh_actions()
         self.statusBar().showMessage(f"Load failed: {message.splitlines()[0]}")
 
     # ---- metal detection -------------------------------------------------
@@ -539,7 +611,9 @@ class MainWindow(QMainWindow):
         if self._volume is None:
             return
 
-        self._detect_btn.setEnabled(False)
+        self._busy.add("detect")
+        self._detect_for = self._volume
+        self._refresh_actions()
         self.statusBar().showMessage("Detecting metal…")
 
         self._detect_thread = QThread(self)
@@ -556,7 +630,11 @@ class MainWindow(QMainWindow):
         self._detect_thread.start()
 
     def _on_detect_finished(self, result):
-        self._detect_btn.setEnabled(True)
+        self._busy.discard("detect")
+        if self._detect_for is not self._volume:
+            # Computed for a volume that is no longer loaded: drop it.
+            self._refresh_actions()
+            return
         self._metal_mask = result["mask"]
         self._roi_mask = result.get("roi_mask")
         self._roi_outline = self._compute_roi_outline(self._roi_mask)
@@ -571,8 +649,7 @@ class MainWindow(QMainWindow):
         avg = result.get("threshold")
         avg_txt = f" (avg ~{avg:.0f} HU over {len(self._slice_thresholds)} slices)" if avg else ""
         self._refresh_overlays()
-        self._segment_btn.setEnabled(True)
-        self._export_rt_btn.setEnabled(True)
+        self._refresh_actions()
         self.statusBar().showMessage(f"Metal detected: {voxels:,} voxels{avg_txt}")
         # Refresh the per-slice readout for whatever slice is showing now.
         self._update_threshold_label(self._slice_slider.value())
@@ -586,7 +663,8 @@ class MainWindow(QMainWindow):
             self._thr_label.setText(f"Metal thr: >{thr:.0f} HU")
 
     def _on_detect_failed(self, message):
-        self._detect_btn.setEnabled(True)
+        self._busy.discard("detect")
+        self._refresh_actions()
         self.statusBar().showMessage(f"Detection: {message.splitlines()[0]}")
 
     # ---- artifact segmentation -------------------------------------------
@@ -630,7 +708,9 @@ class MainWindow(QMainWindow):
             return
 
         method = self._seg_method_combo.currentData()
-        self._segment_btn.setEnabled(False)
+        self._busy.add("segment")
+        self._segment_for = self._metal_mask
+        self._refresh_actions()
 
         # Capture the context bands now so the lazily-computed splits match
         # this segmentation even if the spin boxes change afterward.
@@ -678,7 +758,12 @@ class MainWindow(QMainWindow):
         self._segment_thread.start()
 
     def _on_segment_finished(self, result):
-        self._segment_btn.setEnabled(True)
+        self._busy.discard("segment")
+        self._refresh_actions()
+        if self._segment_for is not self._metal_mask:
+            # Segmented against a metal mask that has since been replaced
+            # (re-detect or new patient): its masks would not match.
+            return
         dark = result["dark_artifacts"]
         bright = result["bright_artifacts"]
         bone = result["bone"]
@@ -784,7 +869,9 @@ class MainWindow(QMainWindow):
         if self._volume is None:
             return
         # First use for this patient: compute the mask on a worker thread.
-        self._hide_bed_check.setEnabled(False)
+        self._busy.add("bed")
+        self._bed_for = self._volume
+        self._refresh_actions()
         self.statusBar().showMessage("Computing body mask…")
 
         self._bed_thread = QThread(self)
@@ -798,8 +885,11 @@ class MainWindow(QMainWindow):
         self._bed_thread.start()
 
     def _on_body_mask_ready(self, mask) -> None:
+        self._busy.discard("bed")
+        self._refresh_actions()
+        if self._bed_for is not self._volume:
+            return  # computed for a volume that is no longer loaded
         self._body_mask = mask
-        self._hide_bed_check.setEnabled(True)
         # Only apply if the box is still checked (user may have changed
         # their mind while the mask was computing).
         if self._hide_bed_check.isChecked():
@@ -807,7 +897,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Body mask ready — bed hidden.")
 
     def _on_body_mask_failed(self, message) -> None:
-        self._hide_bed_check.setEnabled(True)
+        self._busy.discard("bed")
+        self._refresh_actions()
         self._hide_bed_check.blockSignals(True)
         self._hide_bed_check.setChecked(False)
         self._hide_bed_check.blockSignals(False)
@@ -872,7 +963,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        self._export_rt_btn.setEnabled(False)
+        self._busy.add("rtstruct")
+        self._refresh_actions()
         skipped = f" (not ready, skipped: {', '.join(pending)})" if pending else ""
         self.statusBar().showMessage(
             f"Exporting {len(structures)} structures to RTSTRUCT…{skipped}")
@@ -888,12 +980,14 @@ class MainWindow(QMainWindow):
         self._rt_thread.start()
 
     def _on_rtstruct_exported(self, path, names):
-        self._export_rt_btn.setEnabled(True)
+        self._busy.discard("rtstruct")
+        self._refresh_actions()
         self.statusBar().showMessage(
             f"Exported RTSTRUCT ({', '.join(names)}) to {path}")
 
     def _on_rtstruct_failed(self, message):
-        self._export_rt_btn.setEnabled(True)
+        self._busy.discard("rtstruct")
+        self._refresh_actions()
         self.statusBar().showMessage(f"Export RTSTRUCT: {message.splitlines()[0]}")
 
     def _on_export_legend_clicked(self):
@@ -1013,7 +1107,8 @@ class MainWindow(QMainWindow):
         self._view.set_overlays(overlays)
 
     def _on_segment_failed(self, message):
-        self._segment_btn.setEnabled(True)
+        self._busy.discard("segment")
+        self._refresh_actions()
         self.statusBar().showMessage(f"Segmentation: {message.splitlines()[0]}")
 
     # ---- view callbacks --------------------------------------------------

@@ -19,7 +19,7 @@ import numpy as np
 import pydicom
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
-from pydicom.uid import ExplicitVRLittleEndian, PYDICOM_IMPLEMENTATION_UID, generate_uid
+from pydicom.uid import ImplicitVRLittleEndian, PYDICOM_IMPLEMENTATION_UID, generate_uid
 from skimage import measure
 from skimage.draw import polygon as draw_polygon
 
@@ -134,7 +134,10 @@ def create_rtstruct(structures, meta: dict, shape,
     file_meta = FileMetaDataset()
     file_meta.MediaStorageSOPClassUID = RT_STRUCTURE_SET_STORAGE
     file_meta.MediaStorageSOPInstanceUID = generate_uid()
-    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    # Implicit VR: element lengths are 32-bit. In Explicit VR, DS has a
+    # 16-bit length, so a contour over ~2,400 points (~64 KB of ContourData)
+    # can't be encoded and gets silently corrupted.
+    file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
     file_meta.ImplementationClassUID = PYDICOM_IMPLEMENTATION_UID
 
     ds = FileDataset(None, {}, file_meta=file_meta, preamble=b"\0" * 128)
@@ -272,6 +275,17 @@ def read_rtstruct(path) -> list[dict]:
             if len(pts) >= 3:
                 entry['contours'].append(pts)
     return list(rois.values())
+
+
+def referenced_series_uid(path) -> str | None:
+    """SeriesInstanceUID of the CT an RTSTRUCT was drawn on, if it says."""
+    ds = pydicom.dcmread(path, stop_before_pixels=True)
+    for frame in getattr(ds, 'ReferencedFrameOfReferenceSequence', []):
+        for study in getattr(frame, 'RTReferencedStudySequence', []):
+            for series in getattr(study, 'RTReferencedSeriesSequence', []):
+                if getattr(series, 'SeriesInstanceUID', None):
+                    return str(series.SeriesInstanceUID)
+    return None
 
 
 def rasterize_structure(structure: dict, geom: CTGeometry) -> tuple[np.ndarray, int]:

@@ -32,7 +32,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "algorithms"))
 
 from dicom_utils import load_dicom_series_to_hu, resolve_ct_dir  # noqa: E402
-from rtstruct import CTGeometry, read_rtstruct, rasterize_structure  # noqa: E402
+from rtstruct import (CTGeometry, read_rtstruct, rasterize_structure,  # noqa: E402
+                      referenced_series_uid)
 from contour_metrics import compare_masks  # noqa: E402
 
 COLUMNS = ('test', 'ref', 'dice', 'jaccard', 'test_cc', 'ref_cc',
@@ -92,7 +93,14 @@ def main(argv=None) -> int:
         return 0
 
     ct_dir = resolve_ct_dir(args.ct)
-    volume, meta = load_dicom_series_to_hu(ct_dir) if ct_dir else (None, None)
+    # Load the CT series the test RTSTRUCT was drawn on, so another series
+    # in the same folder can't be picked by mistake.
+    series_uid = referenced_series_uid(args.test)
+    volume, meta = load_dicom_series_to_hu(ct_dir, series_uid) if ct_dir else (None, None)
+    if volume is None and series_uid is not None:
+        print("WARNING: the CT series referenced by --test is not in --ct; "
+              "falling back to the largest CT series there.", file=sys.stderr)
+        volume, meta = load_dicom_series_to_hu(ct_dir)
     if volume is None:
         print("Could not load a CT series from --ct", file=sys.stderr)
         return 1

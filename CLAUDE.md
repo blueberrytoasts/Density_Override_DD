@@ -8,6 +8,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 _Last reviewed: 2026-10-11. `feature/pyside-app` was fast-forward merged into `main` and the Streamlit UI was removed (last Streamlit version: tag `streamlit-final`). PySide6 is the only front-end. The algorithm folder `app/` was then renamed to `algorithms/` (status entries below use the new paths). Entries below dated 2026-07 were written on `feature/pyside-app`._
 
+### Bug Review 2026-10-11 — OPEN ITEMS (fix before trusting MIM comparisons)
+
+Found by a four-part code review; each item was confirmed on synthetic data unless marked *plausible*. Line numbers are as of commit `6b89c3b` and will drift. Suggested order: 1, 3, 4, 5, 10, then 2 (2 is partly a design decision — discuss before changing).
+
+1. **Star rays point the wrong way** — `discrimination.py:_get_star_profiles` (~709-714) clamps `end_y`/`end_x` to the image *separately*, which changes the ray direction. With 16 angles, 22.5°/45°/67.5° all become 45°; only ~8 distinct directions survive, and off-centre stars skew further. Pixels are judged on anatomy up to ~3 cm away. `build_discriminator_star_overlay` draws ideal rays, which hides this. *Fix:* shorten each ray to its first border hit (scale the radius) instead of clamping each axis.
+2. **Shape features don't separate streaks from bone** — `discrimination.py` (~724-726, 778, 856-877).
+   - Width: profiles are smoothed (sigma=2) before FWHM, so a 1-px streak measures ~4.9 mm and votes bone; the "<2 mm artifact" branch can't fire.
+   - Gradient: `abs(mean(grad_window))` ≈ 0 for any centred peak, so it always votes bone.
+   - Smoothness: `1/(1+var/100)` ≈ 0.01-0.05, so it always votes artifact.
+   - Net effect: only HU discriminates. Synthetic: a 2000 HU radial streak over 50 HU tissue → 648/720 voxels "bone".
+   - Also: width and gradient are per *sample*, not per mm (diagonal rays under-report width by up to 41%).
+3. **Over-bone/over-tissue vote counts the artifact's own voxels** — `discrimination.py:_analyze_neighborhood_context` (~624-632) and `contour_operations.py:analyze_local_neighborhood` (~59-66). Bright artifact HU (500-1500) falls in the context bone band, so a streak over pure muscle labels itself "over bone" (synthetic: 810/900). That gives it the wrong density override. *Fix:* exclude the parent artifact mask and metal from the counts and the denominator. The two split implementations also use different rules (raw ratio + 1.5 cm tie-break vs 5/3/1 bins + >30 mm bone bonus + 15 mm tie-break); unify them.
+4. **Body mask drops tissue** — `body_mask.py:create_body_mask`.
+   - (a) Keeps only the largest component per slice (~35-42) and in 3D (~52-58), so a separate thigh is dropped entirely: no segmentation there, and "Hide bed" blanks it.
+   - (b) 3D erosion with the default border treats outside-the-volume as background, so the first/last slice is always empty and the next ones shrink.
+   - (c) Dark streaks below −300 HU that reach the skin open a channel to outside air, so the worst dark artifacts are cut out of the body (*plausible clinically*).
+   - *Fix:* keep all large components, pad in z before morphology, reconsider the air threshold / use 3D hole filling.
+5. **Metal detection misses implants** — `metal_detection.py`.
+   - (a) ~82-88: `initial_threshold = percentile(99.5)` then a strict `>`. If >0.5% of voxels sit at the clip value (3071 HU), the mask is empty → "No metal implant detected". Likely with bilateral implants, few slices or a small FOV.
+   - (b) ~496-497, 174-177: a star line only counts if its peak > 75% of the *slice* max, so on extended-HU scans the dimmer of two implants gets no threshold. The brighter implant's threshold then replaces the slice mask and the dimmer implant (and its ROI box) disappears.
+   - (c) ~176: the per-slice threshold is applied to the whole slice. At FW% 50 (UI minimum), dense cortical bone on the other femur becomes "metal" and gets its own ROI box.
+   - (d) ~82-85, 122: only slices above the volume-wide percentile are refined, so a stem tip slice at 2900 HU can be dropped.
+10. **Distance map uses mean spacing** — `contour_operations.py:calculate_metal_distance_map` (~20-24) multiplies voxel distance by `mean(spacing)`. With 0.8/0.8/3.0 mm spacing, 8 mm in-plane reads as 15.3 mm. This flips the dark split's 15 mm tie-break and >30 mm bone bonus. *Fix:* `distance_transform_edt(~metal, sampling=_sampling_zyx(spacing))`.
+
+Smaller:
+- Nearest-ray lookup floors instead of rounding (`discrimination.py` ~523).
+- Small (<10 px) implant fragments are judged with the other implant's star (~667-668, *plausible*).
+- A 1-px ray crashes `np.gradient` (~730, unlikely in practice).
+- `meta['spacing']` z comes from SliceThickness, not the real slice step (`dicom_utils.py`).
+- An empty SliceThickness (Type 2) crashes the load.
+- `rasterize_structure` XORs same-slice contours, so *overlapping islands* from other software become holes.
+- `compare_contours.py` keys structures by name, so duplicate ROI names overwrite each other.
+- metal_detection comments contradict the code (noise cut-off 10 vs 4 px; "average" vs minimum threshold).
+- ~900 lines of `contour_operations.py` are unreachable from the app (Russian-doll / sequential / refine paths); its `refine_mask` step breaks mutual exclusivity if revived.
+
+**FIXED 2026-10-11** (items 6-9):
+- **6. Stale results / wrong-patient export** — `main_window.py`: `_busy` set + `_refresh_actions()` lock Load/Detect/Segment/Export RTSTRUCT while any job runs; detect/segment/body-mask results are identity-checked against `_detect_for`/`_segment_for`/`_bed_for` and dropped if stale.
+- **7. Long contours corrupted the RTSTRUCT** — now written as Implicit VR Little Endian (32-bit lengths). Test: `test_long_contour_roundtrip` (>3000-point contour).
+- **8. Loader merged every CT series in a folder** — `load_dicom_series_to_hu(dir, series_instance_uid=None)` loads one series (the requested one, else the largest), drops duplicate positions, and reports `other_series_ignored` / `duplicate_slices_dropped` (shown in the PySide status bar). `compare_contours.py` loads the series the `--test` RTSTRUCT references (`rtstruct.referenced_series_uid`).
+- **9. Closing mid-job aborted the process** — `closeEvent` offers to close automatically once running threads finish.
+- Verified with the synthetic round-trip suite (8 tests) and a headless GUI test of every race (detect→load, segment→re-detect, body mask→load, close mid-job).
+
 ### HU Range Sliders — RESOLVED (now weighted, was reported broken)
 
 The old note here claimed the `bone_low`/`bone_high` sliders had no effect. That is **no longer true** as of the `star_profile_upgrade` work now on `main`. HU is integrated as a weighted feature (Option B):
