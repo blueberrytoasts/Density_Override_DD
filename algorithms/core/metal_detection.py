@@ -42,7 +42,7 @@ class MetalDetector:
         
         Args:
             ct_volume: 3D CT volume in HU
-            spacing: Voxel spacing (z, y, x) in mm
+            spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
             **kwargs: Method-specific parameters
             
         Returns:

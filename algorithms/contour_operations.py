@@ -11,7 +11,7 @@ def calculate_metal_distance_map(metal_mask, spacing):
     
     Args:
         metal_mask: Binary mask of metal regions
-        spacing: Voxel spacing (z, y, x) in mm
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         
     Returns:
         Distance map in mm from nearest metal voxel
@@ -131,7 +131,7 @@ def classify_artifacts_contextually(ct_volume, artifact_mask, metal_mask, spacin
         ct_volume: 3D CT volume in Hounsfield Units
         artifact_mask: Binary mask of artifact voxels to classify
         metal_mask: Binary mask of metal implant regions
-        spacing: Voxel spacing in mm (z, y, x)
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         bone_range: HU range defining bone tissue (default: 500-1500)
         tissue_range: HU range defining soft tissue (default: -100 to 300)
         window_size: Neighborhood analysis window size in voxels (z, y, x)
@@ -260,7 +260,7 @@ def classify_bright_artifacts_contextually(ct_volume, bright_mask, metal_mask, s
         ct_volume: 3D CT volume in Hounsfield Units
         bright_mask: Binary mask of bright artifact voxels
         metal_mask: Binary mask of metal implant
-        spacing: Voxel spacing in mm (z, y, x)
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         bone_range: HU range defining bone (default: 500-1500)
         tissue_range: HU range defining soft tissue (default: -100 to 300)
         bone_distance_threshold_mm: DEPRECATED - no longer used
@@ -297,7 +297,7 @@ def classify_dark_artifacts_contextually(ct_volume, dark_mask, metal_mask, spaci
         ct_volume: 3D CT volume in Hounsfield Units
         dark_mask: Binary mask of dark artifact voxels
         metal_mask: Binary mask of metal implant
-        spacing: Voxel spacing in mm (z, y, x)
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         bone_range: HU range defining bone (default: 500-1500)
         tissue_range: HU range defining soft tissue (default: -100 to 300)
         window_size: Neighborhood window size in voxels (z, y, x)
@@ -329,7 +329,7 @@ def estimate_expected_tissue_values(ct_volume, metal_mask, spacing, window_size=
     Args:
         ct_volume: CT volume in HU
         metal_mask: Binary mask of metal regions  
-        spacing: Voxel spacing (z, y, x) in mm
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         window_size: Size of smoothing window
         
     Returns:
@@ -412,7 +412,7 @@ def detect_context_aware_bright_artifacts(ct_volume, metal_mask, spacing,
     Args:
         ct_volume: CT volume in HU
         metal_mask: Binary mask of metal regions
-        spacing: Voxel spacing (z, y, x) in mm
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         elevation_threshold: Multiplier for elevation (1.5 = 50% above expected)
         min_elevation_hu: Minimum HU elevation to consider artifact
         max_elevation_hu: Maximum HU elevation to consider artifact (above this = extreme artifacts)
@@ -484,7 +484,7 @@ def create_context_aware_masks(ct_volume, metal_mask, spacing, **kwargs):
     Args:
         ct_volume: CT volume in HU
         metal_mask: Binary mask of metal regions
-        spacing: Voxel spacing (z, y, x)
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         **kwargs: Additional parameters
         
     Returns:
@@ -606,7 +606,7 @@ def create_sequential_masks(ct_volume, metal_mask, spacing, discrimination_metho
     Args:
         ct_volume: CT volume in Hounsfield Units
         metal_mask: Binary mask of metal regions
-        spacing: Voxel spacing (z, y, x)
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         discrimination_method: 'distance', 'edge', 'profile', or 'context_aware'
         **kwargs: Additional parameters including threshold ranges and ROI bounds
     """
@@ -988,7 +988,7 @@ def create_russian_doll_segmentation(ct_volume, metal_mask, spacing, roi_bounds=
     Args:
         ct_volume: 3D CT data in HU
         metal_mask: Already segmented metal mask
-        spacing: Voxel spacing (z, y, x) in mm
+        spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
         roi_bounds: Optional ROI bounds to constrain analysis
         roi_mask: Optional 3D bool mask (e.g. per-component boxes from metal
             detection). Takes precedence over roi_bounds for constraining

@@ -64,7 +64,7 @@ def test_star_profile_detection():
     print("="*60)
 
     ct_volume, (center_z, center_y, center_x) = create_synthetic_ct_volume()
-    spacing = (2.5, 0.7, 0.7)  # mm
+    spacing = (0.7, 0.7, 2.5)  # (x, y, z) mm, loader order  # mm
 
     # Test without star profiles (simplified)
     print("\n[A] Testing WITHOUT star profiles (simplified method)...")
@@ -113,7 +113,7 @@ def test_star_profile_discrimination():
     print("="*60)
 
     ct_volume, (center_z, center_y, center_x) = create_synthetic_ct_volume()
-    spacing = (2.5, 0.7, 0.7)
+    spacing = (0.7, 0.7, 2.5)  # (x, y, z) mm, loader order
 
     # First detect metal
     print("\n[A] Detecting metal...")

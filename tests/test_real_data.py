@@ -87,11 +87,11 @@ def main():
             print(f"[ERROR] Failed to load DICOM data from {ct_dir}")
             return 1
 
-        # Extract spacing (z, y, x) from spatial metadata
+        # Extract spacing (x, y, z) from spatial metadata
         spacing = spatial_meta['spacing']
 
         print(f"[OK] Loaded CT volume: {ct_volume.shape}")
-        print(f"     Spacing: {spacing} mm (z, y, x)")
+        print(f"     Spacing: {spacing} mm (x, y, z)")
         print(f"     HU range: {np.min(ct_volume):.0f} to {np.max(ct_volume):.0f}")
         print(f"     Slice positions: {len(spatial_meta['slice_z_positions'])} slices")
     except Exception as e:

@@ -18,6 +18,15 @@ from core.gpu_utils import (
 )
 
 
+
+def _sampling_zyx(spacing):
+    """Reorder (x, y, z) spacing to the (z, y, x) axis order of the volume.
+
+    ``spacing`` comes from ``load_dicom_series_to_hu`` as (x, y, z); arrays
+    are indexed [slice, row, col], so distance transforms need it reversed.
+    """
+    return (spacing[2], spacing[1], spacing[0])
+
 class DiscriminationMethod(Enum):
     """Available discrimination methods."""
     DISTANCE_BASED = "distance_based"      # Fast, distance from metal
@@ -61,7 +70,7 @@ class ArtifactDiscriminator:
             ct_volume: 3D CT volume in HU
             metal_mask: Binary mask of metal regions
             bright_mask: Binary mask of bright regions to discriminate
-            spacing: Voxel spacing (z, y, x) in mm
+            spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
             **kwargs: Method-specific parameters
             
         Returns:
@@ -107,7 +116,7 @@ class ArtifactDiscriminator:
         """
         # Calculate distance from metal (GPU accelerated)
         inverted_metal = np.logical_not(metal_mask)
-        distances = distance_transform_edt_gpu(inverted_metal, spacing, use_gpu=use_gpu)
+        distances = distance_transform_edt_gpu(inverted_metal, _sampling_zyx(spacing), use_gpu=use_gpu)
         distances_cm = distances / 10.0
 
         # Calculate local variance (GPU accelerated)
@@ -307,7 +316,7 @@ class ArtifactDiscriminator:
         
         # Distance from metal
         inverted_metal = np.logical_not(metal_mask)
-        distances = distance_transform_edt(inverted_metal, sampling=spacing)
+        distances = distance_transform_edt(inverted_metal, sampling=_sampling_zyx(spacing))
         distances_cm = distances / 10.0
         
         # Combine features for classification
@@ -470,7 +479,8 @@ class ArtifactDiscriminator:
 
         # Calculate distance from metal for tie-breaking (GPU accelerated)
         inverted_metal = np.logical_not(metal_mask)
-        distance_from_metal = distance_transform_edt_gpu(inverted_metal, spacing, use_gpu=use_gpu) / 10.0  # cm
+        distance_from_metal = distance_transform_edt_gpu(
+            inverted_metal, _sampling_zyx(spacing), use_gpu=use_gpu) / 10.0  # cm
 
         # Process each slice
         for z in range(ct_volume.shape[0]):
@@ -745,7 +755,7 @@ class ArtifactDiscriminator:
         Args:
             profile: Profile dictionary with HU values, distances, gradients
             distance_mm: Distance from metal center in mm
-            spacing: Voxel spacing (z, y, x) in mm
+            spacing: Voxel spacing (x, y, z) in mm, as from load_dicom_series_to_hu
             pixel_hu: Actual HU value at the pixel being classified
             bone_hu_low: Lower bound of expected bone HU range
             bone_hu_high: Upper bound of expected bone HU range
