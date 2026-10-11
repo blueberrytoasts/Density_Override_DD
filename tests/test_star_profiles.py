@@ -11,7 +11,7 @@ import sys
 import os
 
 # Add app directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'algorithms'))
 
 from core.metal_detection import MetalDetector, MetalDetectionMethod
 from core.discrimination import ArtifactDiscriminator, DiscriminationMethod

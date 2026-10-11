@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Test the 3D adaptive metal detection"""
 
+import os
 import sys
-sys.path.append('app')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'algorithms'))
 
 from pathlib import Path
 import numpy as np

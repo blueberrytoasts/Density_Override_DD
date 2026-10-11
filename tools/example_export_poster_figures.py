@@ -3,8 +3,15 @@ Example script to export poster figures.
 Run this after processing your CT data to generate all poster visualizations.
 """
 
+import os
+import sys
+
 import numpy as np
 from pathlib import Path
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO_ROOT, "algorithms"))
+
 from poster_figures import (
     create_pipeline_progression,
     create_before_after_comparison,

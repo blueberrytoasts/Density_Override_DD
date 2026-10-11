@@ -216,10 +216,10 @@ Metal: >3450 HU (no metal on this slice)
 
 ## Code References
 
-- Star profile threshold calculation: `app/core/metal_detection.py:479-610`
-- Per-slice adaptive loop: `app/core/metal_detection.py:216-267`
-- Star profile line generation: `app/core/metal_detection.py:612+`
-- UI threshold display: `app/main.py:~1069-1095`
+- Star profile threshold calculation: `algorithms/core/metal_detection.py:479-610`
+- Per-slice adaptive loop: `algorithms/core/metal_detection.py:216-267`
+- Star profile line generation: `algorithms/core/metal_detection.py:612+`
+- UI threshold display: `pyside_app/main_window.py:_update_threshold_label`
 
 ---
 

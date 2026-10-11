@@ -6,7 +6,7 @@ Tests core functionality without UI
 
 import sys
 import os
-sys.path.append('app')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'algorithms'))
 
 from pathlib import Path
 import numpy as np

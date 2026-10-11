@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO_ROOT, "app"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "algorithms"))
 
 from dicom_utils import load_dicom_series_to_hu
 from body_mask import create_body_mask

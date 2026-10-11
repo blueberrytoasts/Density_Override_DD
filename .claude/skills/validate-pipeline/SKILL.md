@@ -10,7 +10,7 @@ Perform a static analysis of the full pipeline from DICOM loading through export
 ## Validation Checks
 
 ### 1. Function Signature Matching
-For every call from `pyside_app/` (window + workers) into `app/` modules, verify:
+For every call from `pyside_app/` (window + workers) into `algorithms/` modules, verify:
 - [ ] All arguments passed exist in the function signature
 - [ ] All required parameters (no default) are provided at the call site
 - [ ] Argument types are consistent (not passing a string where int expected)

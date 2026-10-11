@@ -3,14 +3,14 @@
 Metal detection runs star-profile analysis across the whole volume and can take
 several seconds, so -- exactly like ``DicomLoadWorker`` -- it runs on a worker
 thread to keep the UI responsive. This file is pure glue: the actual algorithm
-lives in ``app/core/metal_detection.py``.
+lives in ``algorithms/core/metal_detection.py``.
 We do not reimplement it here; we only call it off the UI thread and report the
 result back through signals.
 """
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from pyside_app import bootstrap  # noqa: F401  (side effect: puts app/ on sys.path)
+from pyside_app import bootstrap  # noqa: F401  (side effect: puts algorithms/ on sys.path)
 from core.metal_detection import (
     MetalDetector, MetalDetectionMethod, build_star_overlay_mask,
 )

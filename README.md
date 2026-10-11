@@ -80,19 +80,18 @@ python -m pyside_app
 │   ├── metal_worker.py      # Threaded metal detection
 │   ├── segment_worker.py    # Threaded artifact segmentation
 │   ├── body_mask_worker.py  # Threaded body mask (couch removal)
-│   └── bootstrap.py         # Puts app/ on sys.path
-├── app/                     # UI-independent algorithm code
+│   └── bootstrap.py         # Puts algorithms/ on sys.path
+├── algorithms/              # UI-independent algorithm code
 │   ├── dicom_utils.py       # DICOM loading, HU conversion
-│   ├── dicom_export.py      # RT Structure Set export
+│   ├── dicom_export.py      # RT Structure Set export (not yet in the UI)
 │   ├── contour_operations.py# Mask operations, Russian Doll segmentation
 │   ├── body_mask.py         # Body / air masking
-│   ├── visualization.py     # Matplotlib/PIL rendering helpers
-│   ├── poster_figures.py    # Poster figure generation
+│   ├── visualization.py     # Matplotlib/PIL rendering helpers (used by tests)
 │   └── core/
 │       ├── metal_detection.py  # 3D adaptive + star-profile detection
 │       ├── discrimination.py   # Bone vs artifact discrimination
 │       └── gpu_utils.py        # Optional CuPy acceleration
-├── tools/                   # Stand-alone figure/debug scripts
+├── tools/                   # Stand-alone figure/debug scripts (incl. poster figures)
 ├── tests/                   # Test scripts
 ├── docs/                    # Algorithm notes and changelogs
 ├── archive/                 # Original Jupyter notebooks (project origins)

@@ -9,7 +9,7 @@ import os
 
 from PySide6.QtCore import QObject, Signal
 
-from pyside_app import bootstrap  # noqa: F401  (side effect: puts app/ on sys.path)
+from pyside_app import bootstrap  # noqa: F401  (side effect: puts algorithms/ on sys.path)
 from dicom_utils import load_dicom_series_to_hu
 
 

@@ -29,7 +29,7 @@ The pipeline's job is to label every voxel near the implant as one of:
 
 ## Stage 0 — DICOM loading & HU conversion
 
-`app/dicom_utils.py:load_dicom_series_to_hu()`
+`algorithms/dicom_utils.py:load_dicom_series_to_hu()`
 
 - Read the CT series, sort slices by `ImagePositionPatient[2]` so the volume is
   in true anatomical order.
@@ -44,7 +44,7 @@ The pipeline's job is to label every voxel near the implant as one of:
 
 ## Stage 1 — Metal detection (self-calibrating, star profiles)
 
-`app/core/metal_detection.py:_detect_adaptive_3d()`
+`algorithms/core/metal_detection.py:_detect_adaptive_3d()`
 
 ### 1a. Rough guess
 Metal is extraordinarily bright, so a first pass is trivial: take the 99.5th
@@ -118,7 +118,7 @@ lime **ROI** overlay.
 "Russian doll" = a fixed carve-out **order** where each class only claims pixels
 the earlier classes left behind, guaranteeing every voxel gets exactly one label
 and no two masks overlap. In the star-profile path
-(`pyside_app/segment_worker.py:117-147`, mirrored in `app/main.py:933-954`):
+(`pyside_app/segment_worker.py:117-147`):
 
 1. **Body mask + ROI** — restrict everything to inside the patient and inside
    the per-implant ROI (`constraint = body_mask & roi_mask`).
@@ -143,7 +143,7 @@ and no two masks overlap. In the star-profile path
 
 ## Stage 3 — Bone vs. bright-artifact discrimination (star profiles again)
 
-`app/core/discrimination.py:_discriminate_star_profile()`
+`algorithms/core/discrimination.py:_discriminate_star_profile()`
 
 This is the scientific core: two pixels can have identical HU yet one is bone
 and one is artifact. They differ in **local shape**, which we read from radial
@@ -419,6 +419,6 @@ metal.
 
 ---
 
-*Key source files:* `app/dicom_utils.py`, `app/core/metal_detection.py`,
-`app/core/discrimination.py`, `app/contour_operations.py`,
-`pyside_app/segment_worker.py`, `app/main.py`.
+*Key source files:* `algorithms/dicom_utils.py`, `algorithms/core/metal_detection.py`,
+`algorithms/core/discrimination.py`, `algorithms/contour_operations.py`,
+`pyside_app/segment_worker.py`.

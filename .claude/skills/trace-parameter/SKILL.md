@@ -25,7 +25,7 @@ Search for where the variable is passed to function calls. Trace through:
 - Record each handoff as `file:line`
 
 ### 3. Find Where It's Consumed
-In the target core module (`app/core/metal_detection.py`, `app/core/discrimination.py`, `app/contour_operations.py`, etc.), find where the parameter is actually used in a computation (comparison, multiplication, array indexing, conditional, etc.). Not just received as a function argument — actually *used*.
+In the target core module (`algorithms/core/metal_detection.py`, `algorithms/core/discrimination.py`, `algorithms/contour_operations.py`, etc.), find where the parameter is actually used in a computation (comparison, multiplication, array indexing, conditional, etc.). Not just received as a function argument — actually *used*.
 
 ### 4. Report the Chain
 
@@ -40,10 +40,10 @@ UI DEFINITION:
 PASSED THROUGH:
   pyside_app/main_window.py:<line> → WorkerClass(<name>=spin.value())
   pyside_app/<worker>.py:<line> → function_name(<name>=self._<name>)
-  app/<module>.py:<line> → function_name(<name>=variable)
+  algorithms/<module>.py:<line> → function_name(<name>=variable)
 
 CONSUMED IN COMPUTATION:
-  app/<module>.py:<line> — <how it's used, e.g. "mask = (hu_volume >= bone_low)">
+  algorithms/<module>.py:<line> — <how it's used, e.g. "mask = (hu_volume >= bone_low)">
 
 STATUS: CONNECTED | BROKEN (parameter defined but never reaches computation)
 ```

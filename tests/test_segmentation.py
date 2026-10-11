@@ -4,7 +4,7 @@ Test script to debug segmentation algorithm
 """
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), 'app'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'algorithms'))
 
 import numpy as np
 from dicom_utils import load_dicom_series_to_hu

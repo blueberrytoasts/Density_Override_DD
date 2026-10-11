@@ -23,7 +23,7 @@ computed here — ContextSplitWorker computes each lazily on demand:
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from pyside_app import bootstrap  # noqa: F401  (puts app/ on sys.path)
+from pyside_app import bootstrap  # noqa: F401  (puts algorithms/ on sys.path)
 from body_mask import create_body_mask
 from contour_operations import classify_artifacts_contextually
 from core.discrimination import (
@@ -31,7 +31,7 @@ from core.discrimination import (
     build_discriminator_star_overlay,
 )
 
-# Default HU thresholds matching ThresholdConfig in app/config.py
+# Default HU thresholds (originally ThresholdConfig in the removed app/config.py)
 _DARK_LOW = -1024
 _DARK_HIGH = -150
 _BRIGHT_LOW = 200

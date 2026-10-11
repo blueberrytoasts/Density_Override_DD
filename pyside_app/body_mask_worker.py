@@ -10,7 +10,7 @@ window for the lifetime of the loaded patient.
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from pyside_app import bootstrap  # noqa: F401  (puts app/ on sys.path)
+from pyside_app import bootstrap  # noqa: F401  (puts algorithms/ on sys.path)
 from body_mask import create_body_mask
 
 

@@ -2,8 +2,9 @@
 """
 Quick test script for Russian doll segmentation
 """
+import os
 import sys
-sys.path.append('app')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'algorithms'))
 
 import numpy as np
 from pathlib import Path
