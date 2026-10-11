@@ -9,9 +9,8 @@ dependencies:
   - scipy=1.11.4
   - scikit-image=0.22.0
   - pydicom=2.4.4
-  - streamlit=1.29.0
-  - pandas=2.1.4
   - pillow=10.2.0
+  - nibabel
   - pip
   - pip:
-    - opencv-python==4.9.0.80
+    - PySide6>=6.6
