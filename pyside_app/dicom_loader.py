@@ -5,35 +5,10 @@ runs on a worker thread (``DicomLoadWorker`` moved onto a ``QThread``) to keep
 the UI responsive. This is the canonical Qt pattern: a plain ``QObject`` worker
 with signals, moved to a thread, never touching widgets directly.
 """
-import os
-
 from PySide6.QtCore import QObject, Signal
 
 from pyside_app import bootstrap  # noqa: F401  (side effect: puts algorithms/ on sys.path)
-from dicom_utils import load_dicom_series_to_hu
-
-
-def resolve_ct_dir(root: str) -> str | None:
-    """Find the directory that holds the CT slices under ``root``.
-
-    Patient folders nest the CT series in a subfolder alongside an RTSTRUCT
-    folder. The CT series has hundreds of files while RTSTRUCT has ~1, so we
-    pick the directory (at any depth, including ``root`` itself) that directly
-    contains the most files. This is fast (no DICOM parsing) and robust across
-    the differing folder-naming conventions in ``data/``.
-
-    Returns:
-        Absolute path to the best candidate directory, or ``None`` if ``root``
-        contains no files at all.
-    """
-    best_dir = None
-    best_count = 0
-    for dirpath, _dirnames, filenames in os.walk(root):
-        n = len(filenames)
-        if n > best_count:
-            best_count = n
-            best_dir = dirpath
-    return best_dir
+from dicom_utils import load_dicom_series_to_hu, resolve_ct_dir
 
 
 class DicomLoadWorker(QObject):

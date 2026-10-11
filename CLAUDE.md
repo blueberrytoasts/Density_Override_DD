@@ -78,6 +78,17 @@ The over-bone/over-tissue splits (Decision 2) previously existed only for the st
 
 `main_window.py:_on_export_legend_clicked` renders a standalone color-key PNG (4× for print) of the mask classes, for placing beside poster figures. Includes only the classes currently toggled on (so the key matches an Export Slice image); the diagnostic overlays (`roi`, `star`, `disc_star`) are always excluded via `_legend_export_exclude`. Legend key→color→label pulled from the single-source `self._legend_entries` tuple (also drives the on-screen toggles). Refuses with a status message if no class overlay is on. Verified offscreen: correct classes/order/exclusions, height scales with class count, empty and diagnostics-only selections write nothing.
 
+### RTSTRUCT Export/Import + Contour Comparison — ADDED (2026-10-11)
+
+For comparing app contours with physician-approved MIM contours. Replaced the old `dicom_export.py`, which (a) never added the image origin, (b) used `spacing[2]` (slice spacing) for x because loader spacing is (x, y, z), and (c) made up new Frame of Reference / series / SOP UIDs because the loader discarded them — so MIM would have misplaced or orphaned every contour.
+- `algorithms/dicom_utils.py:load_dicom_series_to_hu` now also returns per-slice `image_position_patient`, `image_orientation_patient`, `pixel_spacing_rc`, `sop_instance_uids`, `sop_class_uid`, `series_instance_uid`, `frame_of_reference_uid`, and `patient_study` (patient/study attributes copied into the RTSTRUCT so it files under the same patient/study; in memory only, never log it). Old keys unchanged. `resolve_ct_dir` moved here from `pyside_app/dicom_loader.py`.
+- `algorithms/rtstruct.py`: `CTGeometry` (DICOM plane equation, any orientation), `create_rtstruct`/`save_rtstruct` (padded `find_contours` at 0.5 → outline on voxel boundaries; holes = separate contours), `read_rtstruct`, `rasterize_structure` (voxel centre in polygon; same-slice contours XOR → holes).
+- `algorithms/contour_metrics.py:compare_masks` — Dice, Jaccard, cc volumes, HD95 (max of directed 95th percentiles), max HD, MSD, sensitivity, precision; anisotropic spacing.
+- `tools/compare_contours.py` — CLI: `--ct`, `--test`, `--ref`, `--match TEST=REF`, `--list`, `--out csv`; warns on Frame-of-Reference mismatch or contours off the CT grid.
+- PySide: **Export RTSTRUCT…** button (enabled after Detect Metal) exports the toggled-on classes via `pyside_app/rtstruct_worker.py`; names in `main_window.py:_rtstruct_names`, colors from `_legend_entries`.
+- `discrimination.py`: three distance transforms passed (x, y, z) spacing to (z, y, x) arrays — now `_sampling_zyx(spacing)`. Affects the star-profile over-bone/over-tissue **tie-break** (distance < 1.5 cm) and the distance-based method; expect small count shifts vs earlier runs. Docstrings across `algorithms/` corrected to say spacing is (x, y, z).
+- **Verified:** `tests/test_rtstruct_roundtrip.py` (synthetic CT; HFS/HFP/FFS; hand-written expected coordinates; exact voxel round trip; mutation-checked to catch missing-origin and swapped-spacing bugs) and a headless GUI run on a phantom (load → detect → segment → export: 7 structures round-tripped with 0 voxel differences, toggled-off classes excluded). **Not yet verified:** import into MIM on a real patient.
+
 ### What's Working
 - PySide6 viewer (`pyside_app/slice_view.py`): wheel/arrow slice scrubbing, Ctrl+wheel zoom, pan, right-drag W/L, W/L presets, HU under cursor
 - All heavy work on `QThread` workers (load, metal detection, segmentation, body mask, lazy context splits)
@@ -86,6 +97,7 @@ The over-bone/over-tissue splits (Decision 2) previously existed only for the st
 - Star-profile and Legacy segmentation, with bright/dark over-bone/over-tissue splits for both
 - Tunable discrimination bands, weights and context window from the Discrimination toolbar
 - Export Slice (auto-cropped, 4×) and Export Legend for poster figures
+- Export RTSTRUCT (references the loaded CT) and `tools/compare_contours.py` for comparison against reference contours
 
 ---
 
@@ -108,18 +120,20 @@ Medical imaging research project characterizing metal artifacts in CT scans of p
 │   ├── metal_worker.py        # MetalDetectionWorker
 │   ├── segment_worker.py      # SegmentationWorker, LegacySegmentationWorker, ContextSplitWorker
 │   ├── body_mask_worker.py    # Body mask (couch removal)
+│   ├── rtstruct_worker.py     # RtstructExportWorker
 │   └── bootstrap.py           # Puts algorithms/ on sys.path (flat imports)
 ├── algorithms/                # UI-independent algorithm code (formerly app/)
 │   ├── dicom_utils.py         # DICOM I/O, HU conversion
-│   ├── dicom_export.py        # RT Structure Set export (not yet wired into PySide)
+│   ├── rtstruct.py            # CTGeometry, RTSTRUCT export/import, rasterization
+│   ├── contour_metrics.py     # compare_masks: Dice, HD95, MSD, volumes
 │   ├── contour_operations.py  # Mask ops, Russian Doll, contextual artifact splits
 │   ├── body_mask.py           # Body / air masking
 │   └── core/
 │       ├── metal_detection.py # 3D adaptive + star-profile detection
 │       ├── discrimination.py  # Bone vs artifact discrimination
 │       └── gpu_utils.py       # Optional CuPy
-├── tools/                     # Stand-alone figure/debug/poster scripts (add algorithms/ to sys.path themselves)
-├── tests/                     # test_star_profiles.py (synthetic, safe to run anywhere); test_segmentation/test_real_data need local data/
+├── tools/                     # compare_contours.py + figure/debug/poster scripts (add algorithms/ to sys.path themselves)
+├── tests/                     # test_rtstruct_roundtrip.py + test_star_profiles.py (synthetic, safe anywhere); test_segmentation/test_real_data need local data/
 ├── docs/                      # ALGORITHM.md, algorithms/, changelogs/
 ├── archive/                   # Original notebooks — keep (project origins)
 ├── data/, output/             # Local only, gitignored (PHI)
@@ -134,7 +148,8 @@ Medical imaging research project characterizing metal artifacts in CT scans of p
 2. **Metal Detection**: 3D adaptive + FW% star profiles; per-component ROIs → `roi_mask`
 3. **Artifact Segmentation**: Star-profile discrimination (Russian Doll) or Legacy HU thresholds, constrained by `roi_mask`
 4. **Context splits (Decision 2)**: bright/dark artifacts split into over-bone / over-tissue
-5. **Export**: slice/legend images from the UI; `algorithms/dicom_export.py` and NIFTI helpers exist but are not yet in the PySide UI
+5. **Export**: slice/legend images and RTSTRUCT from the UI (`algorithms/rtstruct.py`); NIFTI helper (`save_all_contours_as_nifti`) exists but isn't in the UI
+6. **Compare**: `tools/compare_contours.py` against reference RTSTRUCTs
 
 ### Qt conventions
 - Workers are plain `QObject`s moved onto a `QThread`; they never touch widgets and report via signals.
@@ -162,7 +177,8 @@ python -m pyside_app                # run from the repo root
 - Preserve spatial information (origin, spacing, slice positions)
 - Apply rescale slope/intercept for accurate HU conversion
 - Sort slices by ImagePositionPatient[2]
-- Handle both CT and RTSTRUCT DICOM types
+- **Spacing convention:** `meta['spacing']` is (x, y, z) = (col, row, slice). Arrays are indexed [slice, row, col], so anything taking `sampling=` needs it reversed (`_sampling_zyx`, or `CTGeometry.voxel_spacing_zyx()`).
+- Voxel ↔ patient mm: always go through `rtstruct.CTGeometry` (uses per-slice IPP + IOP); never hand-roll `index * spacing`.
 
 ## Visualization Standards
 

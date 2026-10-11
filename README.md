@@ -44,6 +44,30 @@ python -m pyside_app
    cursor in the status bar.
 5. **Export Slice… / Export Legend…**: save the current view (auto-cropped,
    upscaled 4x, PNG/TIFF) or the color legend (PNG) for figures.
+6. **Export RTSTRUCT…**: save the structures currently toggled on as a DICOM
+   RT Structure Set that references the loaded CT, ready to import into MIM
+   or a planning system. ROI names: `Metal`, `Dark_Artifact`,
+   `Bright_Artifact`, `Bone`, `Bright_Over_Bone`, `Bright_Over_Tissue`,
+   `Dark_Over_Bone`, `Dark_Over_Tissue`. Empty structures are skipped.
+
+## Comparing against reference contours
+
+Export the reference contours (e.g. physician-approved, from MIM) as an
+RTSTRUCT on the same CT, then:
+
+```bash
+# list structure names in both files
+python tools/compare_contours.py --ct "data/HIP3 Patient" --test RS_app.dcm --ref RS_mim.dcm --list
+
+# compare; same-named structures pair automatically, others via --match TEST=REF
+python tools/compare_contours.py --ct "data/HIP3 Patient" --test RS_app.dcm --ref RS_mim.dcm \
+    --match "Bright_Over_Bone=MD_BrightArt_Bone" --out output/compare_hip3.csv
+```
+
+Reports Dice, Jaccard, volumes (cc), volume difference, HD95, max Hausdorff
+and mean surface distance (mm), sensitivity and precision per structure pair.
+Both files are rasterized onto the CT grid the same way, so differences
+reflect the contours themselves.
 
 ### Viewer controls
 
@@ -80,17 +104,19 @@ python -m pyside_app
 │   ├── metal_worker.py      # Threaded metal detection
 │   ├── segment_worker.py    # Threaded artifact segmentation
 │   ├── body_mask_worker.py  # Threaded body mask (couch removal)
+│   ├── rtstruct_worker.py   # Threaded RTSTRUCT export
 │   └── bootstrap.py         # Puts algorithms/ on sys.path
 ├── algorithms/              # UI-independent algorithm code
 │   ├── dicom_utils.py       # DICOM loading, HU conversion
-│   ├── dicom_export.py      # RT Structure Set export (not yet in the UI)
+│   ├── rtstruct.py          # RTSTRUCT export/import + voxel<->patient geometry
+│   ├── contour_metrics.py   # Dice, HD95, surface distance, volumes
 │   ├── contour_operations.py# Mask operations, Russian Doll segmentation
 │   ├── body_mask.py         # Body / air masking
 │   └── core/
 │       ├── metal_detection.py  # 3D adaptive + star-profile detection
 │       ├── discrimination.py   # Bone vs artifact discrimination
 │       └── gpu_utils.py        # Optional CuPy acceleration
-├── tools/                   # Stand-alone figure/debug scripts (incl. poster figures)
+├── tools/                   # compare_contours.py, figure/debug/poster scripts
 ├── tests/                   # Test scripts
 ├── docs/                    # Algorithm notes and changelogs
 ├── archive/                 # Original Jupyter notebooks (project origins)
@@ -122,6 +148,7 @@ In brief:
 ## Tests
 
 ```bash
+python tests/test_rtstruct_roundtrip.py  # synthetic CT, no patient data needed
 python tests/test_star_profiles.py   # synthetic phantom, no patient data needed
 python tests/test_segmentation.py    # needs local data/
 python tests/test_real_data.py       # needs local data/

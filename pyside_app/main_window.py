@@ -9,6 +9,8 @@ Layout:
 DICOM loading runs on a worker thread (``DicomLoadWorker``) so the UI stays
 responsive; the window owns the thread/worker references for their lifetime.
 """
+import os
+
 import numpy as np
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
@@ -25,6 +27,7 @@ from pyside_app.segment_worker import (
     SegmentationWorker, LegacySegmentationWorker, ContextSplitWorker,
 )
 from pyside_app.body_mask_worker import BodyMaskWorker
+from pyside_app.rtstruct_worker import RtstructExportWorker
 
 
 def _autocrop_to_content(image: QImage, threshold: int = 10,
@@ -89,9 +92,14 @@ class MainWindow(QMainWindow):
         # Cached body mask for the loaded patient (computed on first toggle).
         self._body_mask = None
 
+        self._rt_thread: QThread | None = None
+        self._rt_worker: RtstructExportWorker | None = None
+
         # Held so detection (a separate user action) can reuse them after load.
         self._volume = None
         self._spacing = None
+        # Full loader metadata (geometry + UIDs), needed for RTSTRUCT export.
+        self._meta = None
 
         # {slice_index: threshold_HU} from the last detection; empty until then.
         self._slice_thresholds: dict[int, float] = {}
@@ -170,6 +178,18 @@ class MainWindow(QMainWindow):
         )
         # Diagnostic overlays excluded from an exported poster legend.
         self._legend_export_exclude = frozenset({"roi", "star", "disc_star"})
+        # ROI names written to an exported RTSTRUCT (ASCII, no spaces, so
+        # they survive any planning system's name handling).
+        self._rtstruct_names = {
+            "metal": "Metal",
+            "dark": "Dark_Artifact",
+            "bright": "Bright_Artifact",
+            "bone": "Bone",
+            "bright_bone": "Bright_Over_Bone",
+            "bright_tissue": "Bright_Over_Tissue",
+            "dark_bone": "Dark_Over_Bone",
+            "dark_tissue": "Dark_Over_Tissue",
+        }
         self._overlay_checks: dict[str, QCheckBox] = {}
         for key, color, name in self._legend_entries:
             check = QCheckBox(name)
@@ -267,6 +287,17 @@ class MainWindow(QMainWindow):
         )
         self._export_legend_btn.clicked.connect(self._on_export_legend_clicked)
         toolbar.addWidget(self._export_legend_btn)
+
+        self._export_rt_btn = QPushButton("Export RTSTRUCT…")
+        self._export_rt_btn.setEnabled(False)  # enabled once metal is detected
+        self._export_rt_btn.setToolTip(
+            "Save the structures currently toggled on (metal, artifacts, bone,\n"
+            "over-bone/over-tissue splits) as a DICOM RT Structure Set that\n"
+            "references this CT, for import into MIM or a planning system.\n"
+            "ROI, star and disc-star overlays are never exported."
+        )
+        self._export_rt_btn.clicked.connect(self._on_export_rtstruct_clicked)
+        toolbar.addWidget(self._export_rt_btn)
 
         # Hide the CT couch: renders everything outside the body mask as air.
         # Applies to the live view AND exports (export saves the rendered view).
@@ -465,6 +496,8 @@ class MainWindow(QMainWindow):
     def _on_load_finished(self, volume, meta):
         self._volume = volume
         self._spacing = meta.get("spacing")
+        self._meta = meta
+        self._export_rt_btn.setEnabled(False)  # nothing to export until detection
         self._metal_mask = None
         self._roi_mask = None
         self._roi_outline = None
@@ -539,6 +572,7 @@ class MainWindow(QMainWindow):
         avg_txt = f" (avg ~{avg:.0f} HU over {len(self._slice_thresholds)} slices)" if avg else ""
         self._refresh_overlays()
         self._segment_btn.setEnabled(True)
+        self._export_rt_btn.setEnabled(True)
         self.statusBar().showMessage(f"Metal detected: {voxels:,} voxels{avg_txt}")
         # Refresh the per-slice readout for whatever slice is showing now.
         self._update_threshold_label(self._slice_slider.value())
@@ -806,6 +840,61 @@ class MainWindow(QMainWindow):
             )
         else:
             self.statusBar().showMessage(f"Export failed: could not write {path}")
+
+    def _on_export_rtstruct_clicked(self):
+        if self._volume is None or self._meta is None or self._metal_mask is None:
+            return
+        masks = {"metal": self._metal_mask, **(self._seg_masks or {})}
+        colors = {key: color for key, color, _ in self._legend_entries}
+        structures, pending = [], []
+        for key, name in self._rtstruct_names.items():
+            if not self._overlay_checks[key].isChecked():
+                continue
+            mask = masks.get(key)
+            if mask is None:
+                # Toggled on but not available yet (no segmentation, or a
+                # lazy split still computing).
+                pending.append(name)
+                continue
+            rgb = QColor(colors[key])
+            structures.append((name, mask, (rgb.red(), rgb.green(), rgb.blue())))
+        if not structures:
+            self.statusBar().showMessage(
+                "Export RTSTRUCT: no available structures are toggled on.")
+            return
+
+        start_dir = os.path.dirname(self._meta.get("ct_dir", "")) or ""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export RT Structure Set",
+            os.path.join(start_dir, "RS_artifact_contours.dcm"),
+            "DICOM RT Structure Set (*.dcm)",
+        )
+        if not path:
+            return
+
+        self._export_rt_btn.setEnabled(False)
+        skipped = f" (not ready, skipped: {', '.join(pending)})" if pending else ""
+        self.statusBar().showMessage(
+            f"Exporting {len(structures)} structures to RTSTRUCT…{skipped}")
+        self._rt_thread = QThread(self)
+        self._rt_worker = RtstructExportWorker(
+            structures, self._meta, self._volume.shape, path)
+        self._rt_worker.moveToThread(self._rt_thread)
+        self._rt_thread.started.connect(self._rt_worker.run)
+        self._rt_worker.finished.connect(self._on_rtstruct_exported)
+        self._rt_worker.failed.connect(self._on_rtstruct_failed)
+        self._rt_worker.finished.connect(self._rt_thread.quit)
+        self._rt_worker.failed.connect(self._rt_thread.quit)
+        self._rt_thread.start()
+
+    def _on_rtstruct_exported(self, path, names):
+        self._export_rt_btn.setEnabled(True)
+        self.statusBar().showMessage(
+            f"Exported RTSTRUCT ({', '.join(names)}) to {path}")
+
+    def _on_rtstruct_failed(self, message):
+        self._export_rt_btn.setEnabled(True)
+        self.statusBar().showMessage(f"Export RTSTRUCT: {message.splitlines()[0]}")
 
     def _on_export_legend_clicked(self):
         """Save a standalone color-key PNG of the tissue/artifact classes.
