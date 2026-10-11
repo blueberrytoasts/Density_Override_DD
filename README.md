@@ -86,7 +86,6 @@ python -m pyside_app
 │   ├── dicom_export.py      # RT Structure Set export (not yet in the UI)
 │   ├── contour_operations.py# Mask operations, Russian Doll segmentation
 │   ├── body_mask.py         # Body / air masking
-│   ├── visualization.py     # Matplotlib/PIL rendering helpers (used by tests)
 │   └── core/
 │       ├── metal_detection.py  # 3D adaptive + star-profile detection
 │       ├── discrimination.py   # Bone vs artifact discrimination
@@ -123,12 +122,10 @@ In brief:
 ## Tests
 
 ```bash
-python tests/final_test_all_patients.py
-python tests/test_3d_adaptive.py
-python tests/test_russian_doll.py
-python tests/test_segmentation.py
+python tests/test_star_profiles.py   # synthetic phantom, no patient data needed
+python tests/test_segmentation.py    # needs local data/
+python tests/test_real_data.py       # needs local data/
 ```
-These run against the local `data/` folder.
 
 ## License
 

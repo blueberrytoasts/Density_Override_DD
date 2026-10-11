@@ -106,39 +106,10 @@ def test_star_profile_detection():
     return result_star
 
 
-def test_legacy_star_profile():
-    """Test legacy method star profile calculation."""
-    print("\n" + "="*60)
-    print("TEST 2: Legacy Method Star Profile")
-    print("="*60)
-
-    ct_volume, _ = create_synthetic_ct_volume()
-    spacing = (2.5, 0.7, 0.7)
-
-    print("\nTesting legacy detection with star profile refinement...")
-    detector = MetalDetector(MetalDetectionMethod.LEGACY)
-    result = detector.detect(ct_volume, spacing, min_metal_hu=2500, fw_percentage=75.0)
-
-    print(f"  Threshold (star profile): {result['threshold']:.1f} HU")
-    print(f"  Metal voxels: {np.sum(result['mask'])}")
-    print(f"  Holes filled: {result['metadata']['holes_filled']}")
-
-    print("\n[Validation]")
-    if result['threshold'] > 2000:
-        print("  [PASS] Star profile threshold calculated")
-    else:
-        print("  [FAIL] Threshold too low")
-
-    if np.sum(result['mask']) > 0:
-        print("  [PASS] Metal detected")
-    else:
-        print("  [FAIL] No metal detected")
-
-
 def test_star_profile_discrimination():
     """Test star profile-based bone/artifact discrimination."""
     print("\n" + "="*60)
-    print("TEST 3: Star Profile Discrimination")
+    print("TEST 2: Star Profile Discrimination")
     print("="*60)
 
     ct_volume, (center_z, center_y, center_x) = create_synthetic_ct_volume()
@@ -200,14 +171,12 @@ def main():
     print("="*60)
     print("\nThis script tests the recovered star profile algorithms:")
     print("  1. FW75% star profile metal detection")
-    print("  2. Legacy method star profile refinement")
-    print("  3. Star profile-based bone/artifact discrimination")
+    print("  2. Star profile-based bone/artifact discrimination")
     print("\n" + "="*60)
 
     try:
         # Run tests
         test_star_profile_detection()
-        test_legacy_star_profile()
         test_star_profile_discrimination()
 
         # Summary

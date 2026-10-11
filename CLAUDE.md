@@ -114,13 +114,12 @@ Medical imaging research project characterizing metal artifacts in CT scans of p
 │   ├── dicom_export.py        # RT Structure Set export (not yet wired into PySide)
 │   ├── contour_operations.py  # Mask ops, Russian Doll, contextual artifact splits
 │   ├── body_mask.py           # Body / air masking
-│   ├── visualization.py       # Matplotlib/PIL helpers (used by tests)
 │   └── core/
 │       ├── metal_detection.py # 3D adaptive + star-profile detection
 │       ├── discrimination.py  # Bone vs artifact discrimination
 │       └── gpu_utils.py       # Optional CuPy
 ├── tools/                     # Stand-alone figure/debug/poster scripts (add algorithms/ to sys.path themselves)
-├── tests/                     # Test scripts (run against local data/)
+├── tests/                     # test_star_profiles.py (synthetic, safe to run anywhere); test_segmentation/test_real_data need local data/
 ├── docs/                      # ALGORITHM.md, algorithms/, changelogs/
 ├── archive/                   # Original notebooks — keep (project origins)
 ├── data/, output/             # Local only, gitignored (PHI)

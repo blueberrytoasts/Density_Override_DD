@@ -39,3 +39,6 @@ tests/test_output/
 # non-patient figures under docs/images/ instead
 /*.png
 /*.jpg
+
+# Personal Claude Code settings
+.claude/settings.local.json
