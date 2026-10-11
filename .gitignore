@@ -26,3 +26,16 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Patient data and anything derived from it -- never commit (PHI)
+/data/
+/output/
+tests/test_output/
+*.dcm
+*.nii
+*.nii.gz
+
+# Images in the repo root are usually CT screenshots (PHI); put
+# non-patient figures under docs/images/ instead
+/*.png
+/*.jpg
