@@ -10,25 +10,25 @@ Perform a static analysis of the full pipeline from DICOM loading through export
 ## Validation Checks
 
 ### 1. Function Signature Matching
-For every function call from `main.py` into core modules, verify:
+For every call from `pyside_app/` (window + workers) into `app/` modules, verify:
 - [ ] All arguments passed exist in the function signature
 - [ ] All required parameters (no default) are provided at the call site
 - [ ] Argument types are consistent (not passing a string where int expected)
 - [ ] No deprecated parameter names from old versions
 
 Check these call chains:
-- `main.py` -> `dicom_utils.py` (loading)
-- `main.py` -> `core/metal_detection.py` (detection)
-- `main.py` -> `core/discrimination.py` (discrimination)
-- `main.py` -> `contour_operations.py` (segmentation)
-- `main.py` -> `dicom_export.py` (export)
-- `main.py` -> `visualization.py` (display)
+- `dicom_loader.py` -> `dicom_utils.py` (loading)
+- `metal_worker.py` -> `core/metal_detection.py` (detection)
+- `segment_worker.py` -> `core/discrimination.py` (discrimination)
+- `segment_worker.py` -> `contour_operations.py` (segmentation, context splits)
+- `body_mask_worker.py` -> `body_mask.py`
+- `main_window.py` -> worker constructors (argument names and order)
 
 ### 2. UI Parameter Coverage
-Scan all Streamlit widgets in `main.py` (sliders, checkboxes, selectboxes, number_inputs). For each:
+Scan all Qt input widgets in `pyside_app/main_window.py` (spin boxes, checkboxes, combo boxes). For each:
 - [ ] Is the value actually used downstream? (not just displayed)
 - [ ] Does changing the value affect the output? (trace to computation)
-- [ ] Is it gated behind the correct conditional (e.g., only shown when star profiles enabled)?
+- [ ] Is it applied on the right action (Detect vs Segment vs lazy split), and reset by **Reset**?
 
 Flag any widget whose value is never passed to a core function.
 
@@ -45,7 +45,7 @@ Verify execution order makes sense:
 - [ ] Metal detection runs before discrimination (discrimination needs metal mask)
 - [ ] ROI creation runs before discrimination (discrimination is per-ROI)
 - [ ] Body mask available before discrimination (used for bounds)
-- [ ] All required session_state keys are set before they're read
+- [ ] Window state (`_metal_mask`, `_seg_masks`, cached splits) is set before it's read, and stale worker results are discarded
 
 ### 5. Import Consistency
 - [ ] All imports resolve (no importing removed functions)
@@ -54,8 +54,8 @@ Verify execution order makes sense:
 
 ### 6. Known Issue Check
 Cross-reference against known issues in CLAUDE.md:
-- [ ] bone_low/bone_high slider connectivity status
-- [ ] Star profile discrimination HU integration status
+- [ ] HU is a weighted vote, not a hard gate (design note)
+- [ ] Worker signals connect to bound methods, not lambdas (thread-safety)
 - [ ] Any workarounds documented still match current code
 
 ## Output Format
@@ -65,12 +65,12 @@ PIPELINE VALIDATION REPORT
 ==========================
 
 1. FUNCTION SIGNATURES
-   [PASS] main.py:423 -> metal_detection.detect_metal_3d() -- all args match
-   [ISSUE] main.py:910 -> discrimination.discriminate() -- bone_low not passed
+   [PASS] metal_worker.py:NN -> metal_detection.detect_metal_3d() -- all args match
+   [ISSUE] segment_worker.py:NN -> discrimination.discriminate() -- bone_low not passed
 
 2. UI PARAMETERS
-   [PASS] metal_threshold (slider) -> metal_detection.py:45
-   [ORPHAN] bone_low (slider) -- defined at main.py:355, never reaches computation
+   [PASS] fw_percentage (spin box) -> metal_detection.py:NN
+   [ORPHAN] bone_low (spin box) -- defined at main_window.py:NN, never reaches computation
 
 3. MASK CONSISTENCY
    [PASS] All masks are (num_slices, H, W)
@@ -83,7 +83,7 @@ PIPELINE VALIDATION REPORT
    [PASS] All imports resolve
 
 6. KNOWN ISSUES
-   [CONFIRMED] bone_low/bone_high still disconnected (CLAUDE.md matches code)
+   [CONFIRMED] HU is a weighted vote (CLAUDE.md matches code)
 
 SUMMARY: X passes, Y issues, Z warnings
 ```

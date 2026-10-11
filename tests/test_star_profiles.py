@@ -220,7 +220,7 @@ def main():
         print("\nNext steps:")
         print("  1. Test on real CT data")
         print("  2. Compare accuracy with simplified methods")
-        print("  3. Integrate into Streamlit UI")
+        print("  3. Integrate into the PySide UI")
         print("  4. Optimize performance if needed")
 
     except Exception as e:

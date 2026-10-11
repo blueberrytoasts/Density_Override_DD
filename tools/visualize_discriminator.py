@@ -20,7 +20,8 @@ Usage (from repo root):
       [--angles 16] [--bone-low 150] [--bone-high 1500]
       [--bright-low 800] [--bright-high 3500] [--out output/disc_debug.png]
 
-Defaults match the Streamlit app's russian_doll thresholds (main.py:839-846).
+Defaults match the old Streamlit app's russian_doll thresholds (tag streamlit-final,
+app/main.py:839-846); the PySide Discrimination toolbar defaults differ.
 Slice defaults to the slice with the most metal.
 """
 
@@ -92,7 +93,7 @@ def main():
                  f"{np.flatnonzero(metal_per_slice)[0]}-{np.flatnonzero(metal_per_slice)[-1]}")
     print(f"Using slice {z} ({metal_per_slice[z]} metal pixels)")
 
-    # Build candidate masks exactly like the Streamlit star-profile path (main.py:908-941)
+    # Build candidate masks like the old Streamlit star-profile path (streamlit-final, main.py:908-941)
     body_mask = create_body_mask(ct_volume, air_threshold=-300)
     constraint = body_mask & roi_mask if roi_mask is not None else body_mask
     dark_mask = (ct_volume >= -1024) & (ct_volume <= args.dark_high) & ~metal_mask & constraint

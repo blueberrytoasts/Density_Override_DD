@@ -6,12 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## CURRENT WORK STATUS
 
-_Last reviewed: 2026-06-11. `feature/fast-slice-viewer` was fast-forward merged into `main`; `main` is the current tip and is pushed to `origin/main`._
+_Last reviewed: 2026-10-11. `feature/pyside-app` was fast-forward merged into `main` and the Streamlit UI was removed (last Streamlit version: tag `streamlit-final`). PySide6 is the only front-end. Entries below dated 2026-07 were written on `feature/pyside-app`._
 
 ### HU Range Sliders — RESOLVED (now weighted, was reported broken)
 
 The old note here claimed the `bone_low`/`bone_high` sliders had no effect. That is **no longer true** as of the `star_profile_upgrade` work now on `main`. HU is integrated as a weighted feature (Option B):
-- `main.py:~943` passes `bone_hu_low=bone_low, bone_hu_high=bone_high` into discrimination.
+- `pyside_app/segment_worker.py:SegmentationWorker` passes the Bone HU band from the Discrimination toolbar into discrimination.
 - `discrimination.py:_analyze_profile_characteristics` (~704-729) scores HU with weight **±0.45** — the single largest weight (peak width ±0.35, smoothness ±0.25, gradient ±0.25). Final decision: `bone_score > 0.0` (`_classify_from_profile`, ~750).
 
 **Remaining design question (not a bug):** HU is a weighted vote, not a hard gate. A pixel inside the HU range can still be classified as artifact if the shape features outvote it. If a strict cutoff is desired, switch to **Option A**: `bone = (bone_score > 0) AND (bone_low <= HU <= bone_high)`.
@@ -24,7 +24,6 @@ The old bug: `metal_detection.py` found separate connected metal components per 
 - `app/core/metal_detection.py`: per-component region building extracted into `_build_individual_regions()`; both overwrite blocks removed; regions rebuilt from the hole-filled mask. Works for any number of implants. `roi_bounds` remains as overall display/extent only.
 - New result key `roi_mask`: 3D bool union of per-component boxes (+5 voxel conservative margin) via `_regions_to_roi_mask()`. Use this to constrain segmentation, not `roi_bounds`.
 - `app/contour_operations.py`: `create_russian_doll_segmentation(..., roi_mask=None)` — takes precedence over `roi_bounds` box for constraining.
-- `app/main.py`: both segmentation paths pass the detection `roi_mask`.
 - `pyside_app/segment_worker.py` + `main_window.py`: both workers accept `roi_mask`; wired from the detection result (previously PySide segmentation had no ROI constraint at all).
 
 Verified with a synthetic bilateral phantom (2 regions per slice, centers on each implant, gap between implants excluded from ROI mask) and a unilateral phantom (1 region, unchanged behavior).
@@ -35,7 +34,7 @@ The star-profile discriminator had the same averaged-centroid flaw as the old RO
 
 **Fix (on `feature/pyside-app`):**
 - `app/core/discrimination.py`: new `_get_slice_stars()` — one star per metal implant per slice. Components within 10 px (dilation-merge) are grouped so a fragmented implant (cup + screws) gets ONE star; groups <10 metal px skipped as noise; falls back to overall centroid if all tiny. `_discriminate_star_profile` assigns each bright pixel to its nearest star's rays.
-- Benefits both apps automatically (Streamlit `main.py:944` and `pyside_app/segment_worker.py:137` both use `DiscriminationMethod.STAR_PROFILE`).
+- Used by `pyside_app/segment_worker.py` via `DiscriminationMethod.STAR_PROFILE`.
 - Debug/poster tool: `tools/visualize_discriminator.py "data/HIP3 Patient" [--slice N] [--angles N]` renders the exact stars + per-ray profiles + per-pixel verdicts (blue=bone, yellow=artifact). Verified: HIP3 slice 161 → 2 stars (one per hip); HIP1 slice 90 → 1 star.
 - Expect classification shifts on bilateral patients (HIP3 slice 161: bone 1000→618, artifact 543→925 of 1543 candidates) — rays now start inside metal so near-metal streaks are judged on real local geometry.
 
@@ -49,7 +48,7 @@ The star-profile discriminator's HU ranges and the four feature weights were har
 
 ### Contextual Artifact Sub-typing in PySide — ADDED (2026-07-15)
 
-Both apps already answer "is this bright pixel bone or artifact." The *second* question — for each pixel called *artifact*, what tissue is it corrupting underneath (for density override) — existed only in Streamlit. Now in PySide too:
+The discriminator answers "is this bright pixel bone or artifact." The *second* question — for each pixel called *artifact*, what tissue is it corrupting underneath (for density override) — was originally Streamlit-only and is now in PySide:
 - **Bright split** comes free from the discriminator (`disc["artifact_bone_mask"]` / `artifact_tissue_mask`) — the worker previously discarded these two keys.
 - **Dark split** via `classify_dark_artifacts_contextually` (`app/contour_operations.py`): 7×7×3 neighborhood bone-HU vs tissue-HU vote, distance-from-metal tie-break. Per-voxel loop, so it runs **lazily** (`segment_worker.py:DarkContextWorker`) the first time a dark-split overlay is toggled on, not on every Segment; cached until re-segment (`main_window.py:_ensure_dark_split`, identity-guarded so a stale result can't paint onto a newer segmentation). Disc-stars overlay recolored orange→**white** to disambiguate from the bright→bone orange.
 - `segment_worker.py:SegmentationWorker` now returns `bright_artifact_bone/tissue` + `dark_artifact_bone/tissue`; `main_window.py` stores them and adds four opt-in overlay toggles (orange=bright→bone, green=bright→tissue, blue-violet=dark→bone, teal=dark→tissue). Star-profile worker only; legacy returns none.
@@ -80,183 +79,111 @@ The over-bone/over-tissue splits (Decision 2) previously existed only for the st
 `main_window.py:_on_export_legend_clicked` renders a standalone color-key PNG (4× for print) of the mask classes, for placing beside poster figures. Includes only the classes currently toggled on (so the key matches an Export Slice image); the diagnostic overlays (`roi`, `star`, `disc_star`) are always excluded via `_legend_export_exclude`. Legend key→color→label pulled from the single-source `self._legend_entries` tuple (also drives the on-screen toggles). Refuses with a status message if no class overlay is on. Verified offscreen: correct classes/order/exclusions, height scales with class count, empty and diagnostics-only selections write nothing.
 
 ### What's Working
-- Fast slice viewer: PIL-based rendering (~10ms) via `fast_render_slice()` in `app/visualization.py`
-- `@st.fragment` isolated viewer — slice navigation doesn't trigger full page rerun
-- Overlay view: matplotlib figure rendered to PNG bytes, displayed via `st.image()` (no legend in figure)
-- Static HTML legend + styled analysis panel in right column (col2)
-- Auto-switch to Overlays mode when Detect Metal or Segment Artifacts completes
-- Full FW75% star profile metal detection (`app/core/metal_detection.py:479-610`)
-- Per-slice adaptive thresholding (`app/core/metal_detection.py:216-267`)
-- Adaptive metal filter: 75% of max HU in slice (not hardcoded 2500)
-- 32-angle configurable star profiles
-- ROI bounds and body mask constraints
-- Profile-based discrimination (just needs HU integration)
-
-### Scroll Wheel Navigation — Not Working (Parked)
-Attempted JS injection to capture wheel events on the image and step the slider. Does not work reliably with Streamlit 1.54 + `@st.fragment` because React destroys/recreates slider DOM on each fragment rerun. The JS injection code has been removed. Arrow keys work natively when the slider has focus.
+- PySide6 viewer (`pyside_app/slice_view.py`): wheel/arrow slice scrubbing, Ctrl+wheel zoom, pan, right-drag W/L, W/L presets, HU under cursor
+- All heavy work on `QThread` workers (load, metal detection, segmentation, body mask, lazy context splits)
+- Full FW75% star profile metal detection, per-slice adaptive thresholding, adaptive metal filter (75% of slice max HU)
+- Per-component ROIs (`roi_mask`) and per-implant discriminator stars — bilateral implants handled
+- Star-profile and Legacy segmentation, with bright/dark over-bone/over-tissue splits for both
+- Tunable discrimination bands, weights and context window from the Discrimination toolbar
+- Export Slice (auto-cropped, 4×) and Export Legend for poster figures
 
 ---
 
+## PHI — Read First
+
+This repo's `data/`, `output/` and `tests/test_output/` hold patient CT data and derived masks. They are gitignored and **must never be committed, read into an AI session, or pushed**. Earlier history on `origin` still contains them — do not push until that history has been rewritten with sign-off from Ara Alexandrian / Jason Stephens. Put non-patient figures in `docs/images/`, never CT screenshots.
+
 ## Project Overview
 
-This is a medical imaging research project focused on characterizing metal artifacts in CT scans of patients with hip implants. The project has been refactored from Jupyter notebooks into a Streamlit web application for better usability and deployment.
+Medical imaging research project characterizing metal artifacts in CT scans of patients with hip implants, for density override. It began as Jupyter notebooks (`archive/`), became a Streamlit app (tag `streamlit-final`), and is now a PySide6 desktop app.
 
 ## Project Structure
 
 ```
-├── app/                       # Application source code
-│   ├── main.py               # Streamlit web app (fragment viewer, two view modes)
-│   ├── dicom_utils.py        # DICOM loading and RTSTRUCT handling
-│   ├── dicom_export.py       # DICOM RT Structure export
-│   ├── contour_operations.py # Boolean operations and mask refinement
-│   ├── visualization.py      # Visualization (fast_render_slice, create_overlay_image)
-│   ├── config.py             # Configuration management
-│   ├── body_mask.py          # Body masking utilities
-│   └── core/                  # Core algorithms
-│       ├── metal_detection.py   # Metal detection (3D adaptive + star profiles)
-│       └── discrimination.py    # Bone/artifact discrimination
-├── algorithm detailed descriptions/  # Algorithm documentation
-├── data/                      # Patient DICOM data (HIP* Patient folders)
-├── output/                    # Generated masks and exports
-├── docs/                      # Changelogs and plans
-├── requirements.txt           # Python dependencies (streamlit>=1.37.0)
-├── run.sh                     # Launch script
-├── CLAUDE.md                  # THIS FILE - read by Claude at session start
-└── README.md                  # User documentation
+├── pyside_app/                # Desktop UI (Qt) — python -m pyside_app
+│   ├── main_window.py         # Window, toolbars, overlay toggles, workflow wiring
+│   ├── slice_view.py          # QGraphicsView viewer (zoom/pan/W-L/scroll)
+│   ├── hu_render.py           # HU -> QImage hot path (pure NumPy)
+│   ├── dicom_loader.py        # DicomLoadWorker
+│   ├── metal_worker.py        # MetalDetectionWorker
+│   ├── segment_worker.py      # SegmentationWorker, LegacySegmentationWorker, ContextSplitWorker
+│   ├── body_mask_worker.py    # Body mask (couch removal)
+│   └── bootstrap.py           # Puts app/ on sys.path (app/ uses flat imports)
+├── app/                       # UI-independent algorithm code
+│   ├── dicom_utils.py         # DICOM I/O, HU conversion
+│   ├── dicom_export.py        # RT Structure Set export (not yet wired into PySide)
+│   ├── contour_operations.py  # Mask ops, Russian Doll, contextual artifact splits
+│   ├── body_mask.py           # Body / air masking
+│   ├── visualization.py       # Matplotlib/PIL helpers (used by tests)
+│   ├── poster_figures.py      # Poster figure generation
+│   └── core/
+│       ├── metal_detection.py # 3D adaptive + star-profile detection
+│       ├── discrimination.py  # Bone vs artifact discrimination
+│       └── gpu_utils.py       # Optional CuPy
+├── tools/                     # Stand-alone figure/debug scripts
+├── tests/                     # Test scripts (run against local data/)
+├── docs/                      # ALGORITHM.md, algorithms/, changelogs/
+├── archive/                   # Original notebooks — keep (project origins)
+├── data/, output/             # Local only, gitignored (PHI)
+├── requirements.txt / environment.yml
+└── README.md
 ```
 
 ## Key Architecture & Concepts
 
 ### Core Analysis Pipeline
-1. **DICOM Loading**: Read CT series and convert pixel values to Hounsfield Units (HU)
-2. **Metal Detection**: Two methods available:
-   - Legacy: Initial HU threshold + star profile refinement
-   - 3D Adaptive: Multi-planar analysis with automatic thresholding
-3. **ROI Creation**: Individual regions per metal component (avoids bilateral capture)
-4. **Artifact Segmentation**: Two approaches:
-   - Legacy: Simple threshold-based with boolean operations
-   - Russian Doll: Smart discrimination using star profile analysis
-5. **Export**: NIFTI masks or DICOM RT Structure Sets
+1. **DICOM Loading**: Read CT series, convert to HU (worker thread)
+2. **Metal Detection**: 3D adaptive + FW% star profiles; per-component ROIs → `roi_mask`
+3. **Artifact Segmentation**: Star-profile discrimination (Russian Doll) or Legacy HU thresholds, constrained by `roi_mask`
+4. **Context splits (Decision 2)**: bright/dark artifacts split into over-bone / over-tissue
+5. **Export**: slice/legend images from the UI; `app/dicom_export.py` and NIFTI helpers exist but are not yet in the PySide UI
 
-### Key HU Ranges (Hounsfield Units)
+### Qt conventions
+- Workers are plain `QObject`s moved onto a `QThread`; they never touch widgets and report via signals.
+- Connect worker signals to bound methods, not lambdas — a lambda slot runs in the worker thread and repaints the GUI from it (see the 2026-07-16 entry above).
+- Import `pyside_app.bootstrap` before any `app/` module.
+
+### Key HU Ranges (defaults; tunable in the Discrimination toolbar)
 - Metal: adaptive (75% of slice max HU, refined by FW75% star profiles)
-- Bright artifacts/Bone: 300-1500 HU (discriminated by profile analysis)
-- Dark artifacts: <-150 HU
-- Soft tissue: -100 to 300 HU
-
-### Algorithm Features
-- **Star-profile analysis**: 16-point radial sampling for both metal detection and tissue discrimination
-- **FW75% Thresholding**: Full Width at 75% Maximum for adaptive metal thresholding
-- **Russian Doll Segmentation**: Sequential exclusion approach ensuring no tissue overlap
-- **Profile-based Discrimination**: Analyzes peak width, smoothness, and directional variance
-- **3D Analysis**: Considers coronal and sagittal projections for complete metal extent
-- **GPU Acceleration**: Optional CuPy support for faster profile analysis
+- Bright gate 200–2500; bone vote band 400–1800; context bone 500–1500; context tissue −100–300
+- Dark artifacts: −1024 to −150 HU
 
 ## Development Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the application (production mode)
-./run.sh
-
-# Run in development mode
-cd app
-streamlit run main.py
-
-# Run on custom address/port
-streamlit run app/main.py --server.address localhost --server.port 8501
+pip install -r requirements.txt     # or: conda env create -f environment.yml
+python -m pyside_app                # run from the repo root
 ```
 
 ## Important Libraries
 
-- `streamlit`: Web application framework
-- `pydicom`: DICOM file handling and RT Structure creation
-- `numpy`: Array operations and mask manipulation
-- `matplotlib`: Visualization and plotting
-- `scipy`: Image processing (ndimage, morphology, distance transforms)
-- `scikit-image`: Advanced image operations (measure, draw)
-- `nibabel`: NIFTI file I/O for mask export
-- `cupy` (optional): GPU acceleration for profile analysis
-
-## Code Standards
-
-### Module Organization
-- `main.py`: Streamlit UI, `@st.fragment` slice viewer, two view modes, workflow coordination
-- `dicom_utils.py`: DICOM I/O operations, HU conversion
-- `dicom_export.py`: DICOM RT Structure Set creation
-- `contour_operations.py`: Boolean operations, mask refinement, Russian doll segmentation
-- `visualization.py`: `fast_render_slice()` (PIL ~10ms), `create_overlay_image()` (matplotlib), `fig_to_png_bytes()`
-- `config.py`: Configuration management
-- `body_mask.py`: Body masking utilities (air exclusion)
-- `core/metal_detection.py`: 3D adaptive metal detection with star profiles
-- `core/discrimination.py`: Star profile-based bone vs artifact discrimination
-
-### Error Handling
-- Graceful handling of missing DICOM files
-- Validation of RTSTRUCT contours
-- Fallback to manual ranges if auto-detection fails
-
-### Performance Considerations
-- Lazy loading of DICOM data
-- Efficient numpy operations for large 3D volumes
-- Matplotlib figure cleanup to prevent memory leaks
+`PySide6` (UI), `numpy`, `scipy`, `scikit-image`, `pydicom`, `nibabel`, `matplotlib`/`Pillow` (figures), optional `cupy`.
 
 ## Working with DICOM Data
 
-Always handle DICOM metadata carefully:
 - Preserve spatial information (origin, spacing, slice positions)
 - Apply rescale slope/intercept for accurate HU conversion
-- Sort slices by ImagePositionPatient[2] for correct ordering
+- Sort slices by ImagePositionPatient[2]
 - Handle both CT and RTSTRUCT DICOM types
 
 ## Visualization Standards
 
-The project uses consistent color coding:
-- Red (rgba: 1,0,0,0.7): Metal implant
-- Yellow (rgba: 1,1,0,0.6): Bright artifacts
-- Magenta (rgba: 1,0,1,0.6): Dark artifacts
-- Blue (rgba: 0,0.2,0.8,0.5): Bone tissue
-- Lime: ROI boundary indicator
-
-## Deployment Notes
-
-The application is configured to run on:
-- Address: 192.168.1.11
-- Port: 4224
-- Use `run.sh` for consistent deployment settings
-
-## Testing Commands
-
-```bash
-# Run the Streamlit app
-cd app && streamlit run main.py
-
-# Test star profile detection (load patient, enable star profiles, run detection)
-# Test discrimination (select "Russian Doll with Star Profile Discrimination")
-```
+Single source: `main_window.py:self._legend_entries`. Metal red `#ff0000`, dark magenta `#ff00ff`, bright yellow `#ffff00`, bone blue `#0033cc`, bright→bone orange `#ff8000`, bright→tissue pink `#ff69b4`, dark→bone violet `#8a2be2`, dark→tissue turquoise `#00ced1`, ROI lime `#32ff32`, metal stars cyan `#00ffff`.
 
 ## Key Algorithms
 
 ### FW75% Metal Detection
-The star profile algorithm automatically determines metal thresholds by:
-1. Shooting 16 radial lines from detected high-intensity centers
-2. Finding peaks along each profile
-3. Filtering: only lines where peak > 75% of slice max HU (adaptive, not hardcoded)
-4. Calculating 75% of peak value as the threshold per valid line
-5. Using minimum threshold across valid profiles for the slice
+1. Shoot radial lines (configurable, default 32 angles) from detected high-intensity centers
+2. Find peaks along each profile
+3. Keep only lines whose peak > 75% of slice max HU
+4. Threshold per valid line = FW% of its peak
+5. Slice threshold = minimum across valid lines
 
 ### Russian Doll Segmentation
-Sequential tissue segmentation with mutual exclusion:
 1. Segment dark artifacts (excluding metal)
 2. Discriminate bone from bright artifacts using profile analysis
-3. Ensure all masks are mutually exclusive
-4. Apply morphological refinement
+3. Keep all masks mutually exclusive
+4. Morphological refinement
 
 ### Profile-Based Discrimination
-Distinguishes bone from bright artifacts by analyzing:
-- Peak width (bone: broad ~3-5mm, artifacts: narrow <2mm)
-- Smoothness (bone: smooth transitions, artifacts: sharp edges)
-- Directional consistency (bone: consistent, artifacts: variable)
-- Gradient magnitude (bone: gradual, artifacts: steep)
+Weighted vote (defaults HU 0.45, width 0.35, smoothness 0.25, gradient 0.25); bone if score > 0. One star per implant per slice. See `docs/ALGORITHM.md`.

@@ -1,8 +1,8 @@
 """Make the existing ``app/`` modules importable from the PySide app.
 
-The Streamlit code in ``app/`` uses *flat* imports (e.g. ``from dicom_utils
-import ...``, ``from core.metal_detection import ...``) because Streamlit runs
-with ``app/`` as the working directory. To reuse that exact same algorithm code
+The code in ``app/`` uses *flat* imports (e.g. ``from dicom_utils
+import ...``, ``from core.metal_detection import ...``), a holdover from the
+Streamlit app, which ran with ``app/`` as the working directory. To reuse that exact same algorithm code
 from here without copying it, we put ``app/`` on ``sys.path`` once.
 
 Import this module before importing any ``app/`` module:

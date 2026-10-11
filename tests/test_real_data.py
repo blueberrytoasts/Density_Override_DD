@@ -68,7 +68,7 @@ def main():
     print("="*60)
 
     try:
-        # Find CT subdirectory (same approach as main.py)
+        # Find CT subdirectory (same approach as the app loader)
         from pathlib import Path
         patient_path = Path(patient_folder)
         ct_dirs = [d for d in patient_path.iterdir() if d.is_dir() and "CT" in d.name]
@@ -244,7 +244,7 @@ def main():
 
     print("\nNext steps:")
     print("  1. Review results above")
-    print("  2. Test in Streamlit UI for visual comparison")
+    print("  2. Test in the PySide app for visual comparison")
     print("  3. Compare with existing results on this patient")
     print("  4. Merge to main if satisfied")
 
